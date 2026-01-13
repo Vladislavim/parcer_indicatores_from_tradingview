@@ -24,11 +24,8 @@
 <img src="https://img.shields.io/badge/PySide6-Qt6-41CD52?style=flat-square&logo=qt&logoColor=white" alt="Qt">
 <img src="https://img.shields.io/badge/Bybit-API-F7A600?style=flat-square&logo=bitcoin&logoColor=white" alt="Bybit">
 <img src="https://img.shields.io/badge/Telegram-Bot-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram">
-<img src="https://img.shields.io/github/license/Vladislavim/parcer_indicatores_from_tradingview?style=flat-square&color=yellow" alt="License">
 
-</div>
-
-<br>
+<br><br>
 
 ---
 
@@ -38,25 +35,23 @@
 
 <table>
 <tr>
-<td width="50%" valign="top">
+<td align="center" width="50%">
 
 ### 🪟 Windows
 
 ```powershell
-# Скачай и запусти
 LocalSignalsPro.exe
 ```
 
 <a href="../../releases"><img src="https://img.shields.io/badge/Скачать_.exe-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Windows"></a>
 
 </td>
-<td width="50%" valign="top">
+<td align="center" width="50%">
 
 ### 🍎 macOS
 
 ```bash
-# Распакуй и перемести в Applications
-# ПКМ → Открыть (первый запуск)
+# ПКМ → Открыть
 ```
 
 <a href="../../releases"><img src="https://img.shields.io/badge/Скачать_.app-000000?style=for-the-badge&logo=apple&logoColor=white" alt="macOS"></a>
@@ -91,17 +86,17 @@ python run.py
 <td align="center" width="33%">
 <img src="https://img.icons8.com/fluency/96/combo-chart.png" width="60">
 <h3>📊 10 Монет</h3>
-<p>BTC • ETH • SOL • XRP<br>DOGE • ADA • AVAX<br>LINK • SUI • WIF</p>
+BTC • ETH • SOL • XRP<br>DOGE • ADA • AVAX<br>LINK • SUI • WIF
 </td>
 <td align="center" width="33%">
 <img src="https://img.icons8.com/fluency/96/goal.png" width="60">
 <h3>🎯 Конфлюенс</h3>
-<p>EMA Market Structure<br>Smart Money Breakout<br>Trend Targets</p>
+EMA Market Structure<br>Smart Money Breakout<br>Trend Targets
 </td>
 <td align="center" width="33%">
 <img src="https://img.icons8.com/fluency/96/robot-2.png" width="60">
 <h3>🤖 Автоторговля</h3>
-<p>Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация</p>
+Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 </td>
 </tr>
 </table>
@@ -114,35 +109,41 @@ python run.py
 
 ## 🔥 Как работает
 
-```
-╔══════════════════════════════════════════════════════════════════╗
-║                                                                  ║
-║   📈 EMA Market Structure    ════════════════►  🟢 BULL         ║
-║   📈 Smart Money Breakout    ════════════════►  🟢 BULL         ║
-║   📈 Trend Targets           ════════════════►  🔴 BEAR         ║
-║                                                                  ║
-║   ─────────────────────────────────────────────────────────────  ║
-║                                                                  ║
-║   🎯 Конфлюенс: 2/3 совпадают  ═══►  ✅ СИГНАЛ ЛОНГ            ║
-║   📊 HTF (4h): бычий тренд     ═══►  ✅ ПОДТВЕРЖДЁН            ║
-║                                                                  ║
-╚══════════════════════════════════════════════════════════════════╝
-                              ⬇️
-                    📱 Telegram уведомление
-                    🤖 Автооткрытие позиции
-```
+<br>
+
+<img src="https://img.shields.io/badge/📈_EMA_Market_Structure-🟢_BULL-00D9A5?style=for-the-badge" alt="EMA">
+<br><br>
+<img src="https://img.shields.io/badge/📈_Smart_Money_Breakout-🟢_BULL-00D9A5?style=for-the-badge" alt="SM">
+<br><br>
+<img src="https://img.shields.io/badge/📈_Trend_Targets-🔴_BEAR-FF6B6B?style=for-the-badge" alt="Trend">
+
+<br><br>
+
+⬇️
 
 <br>
 
-<div align="center">
+<img src="https://img.shields.io/badge/🎯_КОНФЛЮЕНС_2%2F3-СИГНАЛ_ЛОНГ-F7A600?style=for-the-badge" alt="Confluence">
+<br><br>
+<img src="https://img.shields.io/badge/📊_HTF_(4h)-БЫЧИЙ_ТРЕНД_✓-00D9A5?style=for-the-badge" alt="HTF">
+
+<br><br>
+
+⬇️
+
+<br>
+
+<img src="https://img.shields.io/badge/📱_TELEGRAM-УВЕДОМЛЕНИЕ-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram">
+&nbsp;
+<img src="https://img.shields.io/badge/🤖_BYBIT-АВТО_ОРДЕР-F7A600?style=for-the-badge" alt="Auto">
+
+<br><br>
 
 | Сила | Индикаторы | Статус |
 |:----:|:----------:|:------:|
 | 🔥 **СИЛЬНЫЙ** | 3/3 | `ТОРГУЕМ` |
 | ✅ **ХОРОШИЙ** | 2/3 | `ТОРГУЕМ` |
 | ❌ **СЛАБЫЙ** | 1/3 | `ПРОПУСК` |
-
-</div>
 
 <br>
 
@@ -151,8 +152,6 @@ python run.py
 <br>
 
 ## 📱 Telegram алерты
-
-<div align="center">
 
 ```
 ┌─────────────────────────────────────────┐
@@ -171,8 +170,6 @@ python run.py
 └─────────────────────────────────────────┘
 ```
 
-</div>
-
 <br>
 
 ---
@@ -187,7 +184,6 @@ python run.py
 ```bash
 pip install pyinstaller
 pyinstaller LocalSignalsPro.spec
-# → dist/LocalSignalsPro.exe
 ```
 
 </details>
@@ -198,7 +194,6 @@ pyinstaller LocalSignalsPro.spec
 ```bash
 pip install pyinstaller
 pyinstaller --onefile --windowed --name LocalSignalsPro run.py
-# → dist/LocalSignalsPro.app
 ```
 
 </details>
@@ -209,28 +204,9 @@ pyinstaller --onefile --windowed --name LocalSignalsPro run.py
 
 <br>
 
-<div align="center">
-
 ## 📊 Статистика
 
-<img src="https://github-readme-stats.vercel.app/api?username=Vladislavim&show_icons=true&theme=radical&hide_border=true&bg_color=0D1117&title_color=F7A600&icon_color=00D9A5&text_color=FFFFFF" width="49%">
-<img src="https://github-readme-streak-stats.herokuapp.com?user=Vladislavim&theme=radical&hide_border=true&background=0D1117&ring=F7A600&fire=FF6B6B&currStreakLabel=00D9A5" width="49%">
-
-<br><br>
-
-### 🌟 Поддержи проект
-
-<a href="../../stargazers">
-  <img src="https://img.shields.io/github/stars/Vladislavim/parcer_indicatores_from_tradingview?style=social" alt="Stars">
-</a>
-&nbsp;&nbsp;&nbsp;
-<a href="../../network/members">
-  <img src="https://img.shields.io/github/forks/Vladislavim/parcer_indicatores_from_tradingview?style=social" alt="Forks">
-</a>
-&nbsp;&nbsp;&nbsp;
-<a href="../../watchers">
-  <img src="https://img.shields.io/github/watchers/Vladislavim/parcer_indicatores_from_tradingview?style=social" alt="Watchers">
-</a>
+<img src="https://img.shields.io/badge/📈_COMING-SOON-2a2a35?style=for-the-badge" alt="Coming Soon">
 
 <br><br>
 
@@ -238,7 +214,27 @@ pyinstaller --onefile --windowed --name LocalSignalsPro run.py
 
 <br>
 
+## 📄 Лицензия
+
+<a href="LICENSE">
+  <img src="https://img.shields.io/badge/MIT-LICENSE-F7A600?style=for-the-badge" alt="MIT License">
+</a>
+
+<br><br>
+
+Этот проект распространяется под лицензией **MIT**.
+
+Ты можешь свободно использовать, копировать, модифицировать и распространять код.
+
+<br>
+
+---
+
+<br>
+
 **Made with ❤️ and ☕**
+
+<br>
 
 <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=12&height=100&section=footer" width="100%">
 
