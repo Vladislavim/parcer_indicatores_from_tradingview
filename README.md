@@ -23,14 +23,14 @@
 &nbsp;&nbsp;
 <a href="../../issues"><img src="https://img.shields.io/badge/🐛_БАГИ-СООБЩИТЬ-FF6B6B?style=for-the-badge" alt="Issues"></a>
 &nbsp;&nbsp;
-<a href="../../stargazers"><img src="https://img.shields.io/badge/⭐_ЗВЕЗДА-ПОСТАВИТЬ-00D9A5?style=for-the-badge" alt="Star"></a>
+<a href="../../stargazers"><img src="https://img.shields.io/badge/GitHub-Звезда-181717?style=for-the-badge&logo=github&logoColor=white" alt="Star"></a>
 
 <br><br>
 
 <!-- Tech Badges -->
 <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
-<img src="https://img.shields.io/badge/PySide6-Qt6-41CD52?style=flat-square&logo=qt&logoColor=white" alt="Qt">
-<img src="https://img.shields.io/badge/Bybit-API-F7A600?style=flat-square&logo=bitcoin&logoColor=white" alt="Bybit">
+<img src="https://img.shields.io/badge/Qt-PySide6-41CD52?style=flat-square&logo=qt&logoColor=white" alt="Qt">
+<img src="https://img.shields.io/badge/Bybit-API-F7A600?style=flat-square&logo=bybit&logoColor=white" alt="Bybit">
 <img src="https://img.shields.io/badge/Telegram-Bot-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram">
 <img src="https://img.shields.io/github/last-commit/Vladislavim/parcer_indicatores_from_tradingview?style=flat-square&color=00D9A5" alt="Last Commit">
 
@@ -53,7 +53,7 @@
 LocalSignalsPro.exe
 ```
 
-<a href="../../releases"><img src="https://img.shields.io/badge/Скачать_.exe-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Windows"></a>
+<a href="../../releases"><img src="https://img.shields.io/badge/Скачать-.exe-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Windows"></a>
 
 </td>
 <td align="center" width="50%">
@@ -64,7 +64,7 @@ LocalSignalsPro.exe
 # ПКМ → Открыть
 ```
 
-<a href="../../releases"><img src="https://img.shields.io/badge/Скачать_.app-000000?style=for-the-badge&logo=apple&logoColor=white" alt="macOS"></a>
+<a href="../../releases"><img src="https://img.shields.io/badge/Скачать-.app-000000?style=for-the-badge&logo=apple&logoColor=white" alt="macOS"></a>
 
 </td>
 </tr>
@@ -145,9 +145,9 @@ Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 
 <br><br>
 
-<img src="https://img.shields.io/badge/💬_TELEGRAM-УВЕДОМЛЕНИЕ-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram">
+<img src="https://img.shields.io/badge/Telegram-УВЕДОМЛЕНИЕ-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram">
 &nbsp;
-<img src="https://img.shields.io/badge/⚡_BYBIT-АВТО_ОРДЕР-F7A600?style=for-the-badge" alt="Auto">
+<img src="https://img.shields.io/badge/Bybit-АВТО_ОРДЕР-F7A600?style=for-the-badge&logo=bybit&logoColor=white" alt="Bybit">
 
 <br><br>
 
@@ -165,6 +165,8 @@ Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 <br>
 
 ## 💬 Telegram алерты
+
+<img src="https://img.shields.io/badge/Telegram-Алерты-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram">
 
 ```
 ┌─────────────────────────────────────────┐
