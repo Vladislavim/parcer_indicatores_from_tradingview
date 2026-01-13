@@ -95,17 +95,17 @@ python run.py
 <table>
 <tr>
 <td align="center" width="33%">
-<h1>📊</h1>
+<h1>💹</h1>
 <h3>10 Монет</h3>
 BTC • ETH • SOL • XRP<br>DOGE • ADA • AVAX<br>LINK • SUI • WIF
 </td>
 <td align="center" width="33%">
-<h1>🎯</h1>
+<h1>🔮</h1>
 <h3>Конфлюенс</h3>
 EMA Market Structure<br>Smart Money Breakout<br>Trend Targets
 </td>
 <td align="center" width="33%">
-<h1>🤖</h1>
+<h1>⚙️</h1>
 <h3>Автоторговля</h3>
 Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 </td>
@@ -119,43 +119,43 @@ Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 
 <br>
 
-## 🔥 Как работает
+## 🎲 Как работает
 
 <br>
 
-<img src="https://img.shields.io/badge/📈_EMA_Market_Structure-🟢_BULL-00D9A5?style=for-the-badge" alt="EMA">
+<img src="https://img.shields.io/badge/〰️_EMA_Market_Structure-●_BULL-00D9A5?style=for-the-badge" alt="EMA">
 <br><br>
-<img src="https://img.shields.io/badge/📈_Smart_Money_Breakout-🟢_BULL-00D9A5?style=for-the-badge" alt="SM">
+<img src="https://img.shields.io/badge/〰️_Smart_Money_Breakout-●_BULL-00D9A5?style=for-the-badge" alt="SM">
 <br><br>
-<img src="https://img.shields.io/badge/📈_Trend_Targets-🔴_BEAR-FF6B6B?style=for-the-badge" alt="Trend">
-
-<br><br>
-
-⬇️
+<img src="https://img.shields.io/badge/〰️_Trend_Targets-●_BEAR-FF6B6B?style=for-the-badge" alt="Trend">
 
 <br><br>
 
-<img src="https://img.shields.io/badge/🎯_КОНФЛЮЕНС_2%2F3-СИГНАЛ_ЛОНГ-F7A600?style=for-the-badge" alt="Confluence">
-<br><br>
-<img src="https://img.shields.io/badge/📊_HTF_(4h)-БЫЧИЙ_ТРЕНД_✓-00D9A5?style=for-the-badge" alt="HTF">
+↓
 
 <br><br>
 
-⬇️
+<img src="https://img.shields.io/badge/🔮_КОНФЛЮЕНС_2%2F3-СИГНАЛ_ЛОНГ-F7A600?style=for-the-badge" alt="Confluence">
+<br><br>
+<img src="https://img.shields.io/badge/📐_HTF_(4h)-БЫЧИЙ_ТРЕНД_✓-00D9A5?style=for-the-badge" alt="HTF">
 
 <br><br>
 
-<img src="https://img.shields.io/badge/📱_TELEGRAM-УВЕДОМЛЕНИЕ-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram">
+↓
+
+<br><br>
+
+<img src="https://img.shields.io/badge/💬_TELEGRAM-УВЕДОМЛЕНИЕ-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram">
 &nbsp;
-<img src="https://img.shields.io/badge/🤖_BYBIT-АВТО_ОРДЕР-F7A600?style=for-the-badge" alt="Auto">
+<img src="https://img.shields.io/badge/⚡_BYBIT-АВТО_ОРДЕР-F7A600?style=for-the-badge" alt="Auto">
 
 <br><br>
 
 | Сила | Индикаторы | Статус |
 |:----:|:----------:|:------:|
-| 🔥 **СИЛЬНЫЙ** | 3/3 | `ТОРГУЕМ` |
-| ✅ **ХОРОШИЙ** | 2/3 | `ТОРГУЕМ` |
-| ❌ **СЛАБЫЙ** | 1/3 | `ПРОПУСК` |
+| 🌟 **СИЛЬНЫЙ** | 3/3 | `ТОРГУЕМ` |
+| ◉ **ХОРОШИЙ** | 2/3 | `ТОРГУЕМ` |
+| ○ **СЛАБЫЙ** | 1/3 | `ПРОПУСК` |
 
 <br>
 
@@ -164,7 +164,7 @@ Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 
 <br>
 
-## 📱 Telegram алерты
+## 💬 Telegram алерты
 
 ```
 ┌─────────────────────────────────────────┐
@@ -190,7 +190,7 @@ Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 
 <br>
 
-## 🛠 Сборка
+## 🔧 Сборка
 
 <details>
 <summary><b>🪟 Windows (.exe)</b></summary>
@@ -219,7 +219,7 @@ pyinstaller --onefile --windowed --name LocalSignalsPro run.py
 
 <br>
 
-## 📄 Лицензия
+## 📜 Лицензия
 
 <a href="LICENSE">
   <img src="https://img.shields.io/badge/MIT-LICENSE-F7A600?style=for-the-badge" alt="MIT License">
@@ -236,7 +236,7 @@ pyinstaller --onefile --windowed --name LocalSignalsPro run.py
 
 <br>
 
-### ⭐ Поддержи проект
+### 🌟 Поддержи проект
 
 <a href="../../stargazers">
   <img src="https://img.shields.io/github/stars/Vladislavim/parcer_indicatores_from_tradingview?style=social" alt="Stars">
