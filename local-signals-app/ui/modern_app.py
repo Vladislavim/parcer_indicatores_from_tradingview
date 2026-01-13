@@ -27,6 +27,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from core.worker import Worker
+from ui.styles import (
+    COLORS, DARK_THEME, LIGHT_THEME, set_theme, get_current_theme, get_label_style,
+    AnimatedCard, ModernInput, ModernCombo, SmallButton, BigButton
+)
 
 
 # Кэш иконок - глобальный для всего приложения
@@ -198,25 +202,8 @@ COIN_ICONS = {
 THREAD_ID_DEV = 5
 DEFAULT_CHAT_ID = "-1003065825691"
 
-# Цветовая палитра
-COLORS = {
-    "bg_dark": "#0D0D0F",
-    "bg_card": "#16161A", 
-    "bg_hover": "#1E1E24",
-    "accent": "#6C5CE7",
-    "accent_light": "#A29BFE",
-    "accent2": "#00CEC9",
-    "accent3": "#FD79A8",
-    "success": "#00D9A5",
-    "danger": "#FF6B6B",
-    "warning": "#FDCB6E",
-    "text": "#FFFFFF",
-    "text_muted": "#72727E",
-    "border": "#2D2D35",
-}
-
 # Стиль для лейблов без обводки
-LABEL_STYLE = f"font-size: 13px; color: {COLORS['text_muted']}; background: transparent; border: none;"
+LABEL_STYLE = get_label_style()
 
 
 class ColorfulAuraBackground(QWidget):
@@ -293,14 +280,20 @@ class ColorfulAuraBackground(QWidget):
         
         w, h = self.width(), self.height()
         
-        # Градиентный фон
+        # Градиентный фон в зависимости от темы
         bg = QLinearGradient(0, 0, w, h)
-        bg.setColorAt(0, QColor(13, 13, 15))
-        bg.setColorAt(0.5, QColor(18, 18, 22))
-        bg.setColorAt(1, QColor(13, 13, 15))
+        if get_current_theme() == "light":
+            bg.setColorAt(0, QColor(245, 245, 247))
+            bg.setColorAt(0.5, QColor(235, 235, 240))
+            bg.setColorAt(1, QColor(245, 245, 247))
+        else:
+            bg.setColorAt(0, QColor(13, 13, 15))
+            bg.setColorAt(0.5, QColor(18, 18, 22))
+            bg.setColorAt(1, QColor(13, 13, 15))
         painter.fillRect(self.rect(), bg)
         
-        # Орбы
+        # Орбы (менее яркие для светлой темы)
+        alpha_mult = 0.5 if get_current_theme() == "light" else 1.0
         for orb in self.orbs:
             cx, cy = int(orb['x'] * w), int(orb['y'] * h)
             pulse = 1 + 0.3 * math.sin(self.time * orb['pulse_speed'] * 50 + orb['phase'])
@@ -308,6 +301,7 @@ class ColorfulAuraBackground(QWidget):
             
             gradient = QRadialGradient(cx, cy, radius)
             r, g, b, a = orb['color']
+            a = int(a * alpha_mult)
             gradient.setColorAt(0, QColor(r, g, b, a))
             gradient.setColorAt(0.4, QColor(r, g, b, int(a * 0.5)))
             gradient.setColorAt(0.7, QColor(r, g, b, int(a * 0.2)))
@@ -318,9 +312,10 @@ class ColorfulAuraBackground(QWidget):
             painter.drawEllipse(cx - radius, cy - radius, radius * 2, radius * 2)
         
         # Частицы
+        particle_color = 100 if get_current_theme() == "light" else 255
         for p in self.particles:
             px, py = int(p['x'] * w), int(p['y'] * h)
-            painter.setBrush(QColor(255, 255, 255, int(255 * p['alpha'] * (0.5 + 0.5 * math.sin(self.time * 2)))))
+            painter.setBrush(QColor(particle_color, particle_color, particle_color, int(255 * p['alpha'] * (0.5 + 0.5 * math.sin(self.time * 2)))))
             painter.drawEllipse(px, py, int(p['size']), int(p['size']))
         
         # Виньетка
@@ -330,61 +325,6 @@ class ColorfulAuraBackground(QWidget):
         vignette.setColorAt(1, QColor(0, 0, 0, 120))
         painter.setBrush(vignette)
         painter.drawRect(self.rect())
-
-
-class AnimatedCard(QFrame):
-    """Карточка с анимацией появления и hover эффектами"""
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._setup_style()
-        self._hovered = False
-        
-    def _setup_style(self):
-        self.setStyleSheet(f"""
-            QFrame {{
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(22, 22, 26, 0.9), 
-                    stop:1 rgba(18, 18, 22, 0.95));
-                border: 1px solid rgba(45, 45, 53, 0.5);
-                border-radius: 24px;
-            }}
-        """)
-        
-        shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(40)
-        shadow.setColor(QColor(0, 0, 0, 100))
-        shadow.setOffset(0, 15)
-        self.setGraphicsEffect(shadow)
-        
-    def enterEvent(self, event):
-        self._hovered = True
-        self.setStyleSheet(f"""
-            QFrame {{
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(30, 30, 36, 0.95), 
-                    stop:1 rgba(22, 22, 26, 0.98));
-                border: 1px solid rgba(108, 92, 231, 0.5);
-                border-radius: 24px;
-            }}
-        """)
-        
-    def leaveEvent(self, event):
-        self._hovered = False
-        self._setup_style()
-        
-    def fade_in(self, duration=300):
-        """Плавное появление"""
-        effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(effect)
-        
-        anim = QPropertyAnimation(effect, b"opacity")
-        anim.setDuration(duration)
-        anim.setStartValue(0)
-        anim.setEndValue(1)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        anim.start()
-        self._fade_anim = anim
 
 
 class PulseIndicator(QWidget):
@@ -534,8 +474,9 @@ class SignalCard(QFrame):
         
         self.setStyleSheet(f"""
             QFrame {{
-                background: transparent;
-                border: none;
+                background: {COLORS['bg_card']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 14px;
             }}
         """)
         
@@ -596,11 +537,13 @@ class SignalCard(QFrame):
         layout.addWidget(self.chart_btn)
         
     def enterEvent(self, event):
+        is_light = get_current_theme() == "light"
+        hover_bg = "rgba(200, 200, 210, 0.4)" if is_light else "rgba(40, 40, 50, 0.8)"
         self.setStyleSheet(f"""
             QFrame {{
-                background: rgba(30, 30, 36, 0.4);
-                border: none;
-                border-radius: 12px;
+                background: {hover_bg};
+                border: 1px solid {COLORS['accent']};
+                border-radius: 14px;
             }}
         """)
         
@@ -608,27 +551,33 @@ class SignalCard(QFrame):
         self._update_card_style()
         
     def _update_card_style(self):
+        is_light = get_current_theme() == "light"
         if self.status == "bull":
+            bg = "rgba(0, 184, 148, 0.15)" if is_light else "rgba(0, 217, 165, 0.1)"
+            border = "rgba(0, 217, 165, 0.4)"
             self.setStyleSheet(f"""
                 QFrame {{
-                    background: rgba(0, 217, 165, 0.06);
-                    border: none;
-                    border-radius: 12px;
+                    background: {bg};
+                    border: 1px solid {border};
+                    border-radius: 14px;
                 }}
             """)
         elif self.status == "bear":
+            bg = "rgba(231, 76, 60, 0.15)" if is_light else "rgba(255, 107, 107, 0.1)"
+            border = "rgba(255, 107, 107, 0.4)"
             self.setStyleSheet(f"""
                 QFrame {{
-                    background: rgba(255, 107, 107, 0.06);
-                    border: none;
-                    border-radius: 12px;
+                    background: {bg};
+                    border: 1px solid {border};
+                    border-radius: 14px;
                 }}
             """)
         else:
             self.setStyleSheet(f"""
                 QFrame {{
-                    background: transparent;
-                    border: none;
+                    background: {COLORS['bg_card']};
+                    border: 1px solid {COLORS['border']};
+                    border-radius: 14px;
                 }}
             """)
         
@@ -667,116 +616,6 @@ class SignalCard(QFrame):
         elif "Тренд" in detail:
             indicator = "trend_targets"
         self.update_indicator(indicator, status, detail)
-
-
-class SmallButton(QPushButton):
-    """Маленькая кнопка"""
-    
-    def __init__(self, text: str, parent=None):
-        super().__init__(text, parent)
-        self.setFixedHeight(36)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet(f"""
-            QPushButton {{
-                background: {COLORS["bg_hover"]};
-                border: 1px solid {COLORS["border"]};
-                border-radius: 10px;
-                color: {COLORS["text"]};
-                font-size: 12px;
-                font-weight: 600;
-                padding: 8px 16px;
-            }}
-            QPushButton:hover {{
-                background: {COLORS["accent"]};
-                border-color: {COLORS["accent"]};
-            }}
-        """)
-
-
-class BigButton(QPushButton):
-    """Большая кнопка с анимацией"""
-    
-    def __init__(self, text: str, color: str = "accent", parent=None):
-        super().__init__(text, parent)
-        self.color = COLORS.get(color, COLORS["accent"])
-        self.setMinimumHeight(52)
-        self.setCursor(Qt.PointingHandCursor)
-        self._setup_style()
-        
-    def _setup_style(self):
-        self.setStyleSheet(f"""
-            QPushButton {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {self.color}, stop:1 {COLORS["accent_light"]});
-                border: none;
-                border-radius: 14px;
-                color: white;
-                font-size: 15px;
-                font-weight: 700;
-                padding: 14px 28px;
-            }}
-            QPushButton:hover {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {COLORS["accent_light"]}, stop:1 {self.color});
-            }}
-            QPushButton:disabled {{
-                background: {COLORS["bg_hover"]};
-                color: {COLORS["text_muted"]};
-            }}
-        """)
-
-
-class ModernInput(QLineEdit):
-    """Современное поле ввода"""
-    
-    def __init__(self, placeholder: str = "", parent=None):
-        super().__init__(parent)
-        self.setPlaceholderText(placeholder)
-        self.setMinimumHeight(48)
-        self.setStyleSheet(f"""
-            QLineEdit {{
-                background: {COLORS["bg_card"]};
-                border: 2px solid {COLORS["border"]};
-                border-radius: 14px;
-                padding: 12px 16px;
-                font-size: 14px;
-                color: {COLORS["text"]};
-            }}
-            QLineEdit:focus {{
-                border-color: {COLORS["accent"]};
-            }}
-        """)
-
-
-class ModernCombo(QComboBox):
-    """Современный комбобокс"""
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(48)
-        self.setStyleSheet(f"""
-            QComboBox {{
-                background: {COLORS["bg_card"]};
-                border: 2px solid {COLORS["border"]};
-                border-radius: 14px;
-                padding: 12px 16px;
-                font-size: 14px;
-                color: {COLORS["text"]};
-            }}
-            QComboBox:hover {{ border-color: {COLORS["accent"]}; }}
-            QComboBox::drop-down {{ border: none; width: 35px; }}
-            QComboBox::down-arrow {{
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 6px solid {COLORS["text_muted"]};
-            }}
-            QComboBox QAbstractItemView {{
-                background: {COLORS["bg_card"]};
-                border: 2px solid {COLORS["border"]};
-                border-radius: 12px;
-                selection-background-color: {COLORS["accent"]};
-            }}
-        """)
 
 
 class LiveProgress(QWidget):
@@ -966,6 +805,7 @@ class MainWindow(QMainWindow):
         self.worker: Optional[Worker] = None
         self.cards: Dict[str, SignalCard] = {}
         self.chart_windows: List[ChartWindow] = []
+        self.terminal = None
         
         self._setup_ui()
         self._load_settings()
@@ -990,12 +830,12 @@ class MainWindow(QMainWindow):
         layout.setSpacing(20)
         
         # Левая панель
-        left = self._create_left_panel()
-        layout.addWidget(left, 1)
+        self.left_panel = self._create_left_panel()
+        layout.addWidget(self.left_panel, 1)
         
         # Правая панель
-        right = self._create_right_panel()
-        layout.addWidget(right, 2)
+        self.right_panel = self._create_right_panel()
+        layout.addWidget(self.right_panel, 2)
         
         # Главный layout
         main = QVBoxLayout(central)
@@ -1014,23 +854,23 @@ class MainWindow(QMainWindow):
         layout.setSpacing(16)
         
         # Заголовок
-        title = QLabel("⚙️ Настройки")
-        title.setStyleSheet(f"font-size: 22px; font-weight: 800; color: {COLORS['text']}; background: transparent; border: none;")
-        layout.addWidget(title)
+        self.title_left = QLabel("⚙️ Настройки")
+        self.title_left.setStyleSheet(f"font-size: 22px; font-weight: 800; color: {COLORS['text']}; background: transparent; border: none;")
+        layout.addWidget(self.title_left)
         
         # Биржа
-        lbl_exchange = QLabel("Биржа")
-        lbl_exchange.setStyleSheet(LABEL_STYLE)
-        layout.addWidget(lbl_exchange)
+        self.lbl_exchange = QLabel("Биржа")
+        self.lbl_exchange.setStyleSheet(LABEL_STYLE)
+        layout.addWidget(self.lbl_exchange)
         self.exchange = ModernCombo()
         self.exchange.addItem("Bybit Фьючерсы", "BYBIT_PERP")
         self.exchange.addItem("Binance Спот", "BINANCE_SPOT")
         layout.addWidget(self.exchange)
         
         # Таймфрейм
-        lbl_tf = QLabel("Таймфрейм")
-        lbl_tf.setStyleSheet(LABEL_STYLE)
-        layout.addWidget(lbl_tf)
+        self.lbl_tf = QLabel("Таймфрейм")
+        self.lbl_tf.setStyleSheet(LABEL_STYLE)
+        layout.addWidget(self.lbl_tf)
         self.tf = ModernCombo()
         for k, v in [("1m", "1 мин"), ("5m", "5 мин"), ("15m", "15 мин"), ("1h", "1 час"), ("4h", "4 часа"), ("1d", "1 день")]:
             self.tf.addItem(v, k)
@@ -1038,9 +878,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.tf)
         
         # Telegram
-        lbl_tg = QLabel("Telegram")
-        lbl_tg.setStyleSheet(LABEL_STYLE)
-        layout.addWidget(lbl_tg)
+        self.lbl_tg = QLabel("Telegram")
+        self.lbl_tg.setStyleSheet(LABEL_STYLE)
+        layout.addWidget(self.lbl_tg)
         self.tg_token = ModernInput("Токен бота")
         self.tg_token.setEchoMode(QLineEdit.Password)
         layout.addWidget(self.tg_token)
@@ -1053,6 +893,32 @@ class MainWindow(QMainWindow):
         self.test_btn = SmallButton("🔔 Тест")
         self.test_btn.clicked.connect(self._test_tg)
         layout.addWidget(self.test_btn)
+        
+        # Переключатель темы
+        theme_row = QHBoxLayout()
+        self.lbl_theme = QLabel("Тема")
+        self.lbl_theme.setStyleSheet(LABEL_STYLE)
+        theme_row.addWidget(self.lbl_theme)
+        theme_row.addStretch()
+        
+        self.theme_btn = QPushButton("🌙")
+        self.theme_btn.setFixedSize(36, 36)
+        self.theme_btn.setCursor(Qt.PointingHandCursor)
+        self.theme_btn.setToolTip("Переключить тему")
+        self.theme_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {COLORS['bg_hover']};
+                border: none;
+                border-radius: 10px;
+                font-size: 18px;
+            }}
+            QPushButton:hover {{
+                background: {COLORS['accent']};
+            }}
+        """)
+        self.theme_btn.clicked.connect(self._toggle_theme)
+        theme_row.addWidget(self.theme_btn)
+        layout.addLayout(theme_row)
         
         layout.addStretch()
         
@@ -1071,6 +937,30 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(False)
         layout.addWidget(self.stop_btn)
         
+        # Кнопка терминала с иконкой Bybit
+        self.terminal_btn = QPushButton("  Bybit Terminal")
+        self.terminal_btn.setFixedHeight(40)
+        self.terminal_btn.setCursor(Qt.PointingHandCursor)
+        self.terminal_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #f7a600;
+                border: none;
+                border-radius: 10px;
+                color: #000;
+                font-size: 13px;
+                font-weight: 700;
+                padding-left: 8px;
+            }}
+            QPushButton:hover {{
+                background: #ffb820;
+            }}
+        """)
+        self.terminal_btn.clicked.connect(self._open_terminal)
+        layout.addWidget(self.terminal_btn)
+        
+        # Загружаем иконку Bybit для кнопки
+        self._load_bybit_icon()
+        
         return panel
 
         
@@ -1082,9 +972,9 @@ class MainWindow(QMainWindow):
         
         # Заголовок
         header = QHBoxLayout()
-        title = QLabel("📊 Сигналы")
-        title.setStyleSheet(f"font-size: 22px; font-weight: 800; color: {COLORS['text']}; background: transparent; border: none;")
-        header.addWidget(title)
+        self.title_right = QLabel("📊 Сигналы")
+        self.title_right.setStyleSheet(f"font-size: 22px; font-weight: 800; color: {COLORS['text']}; background: transparent; border: none;")
+        header.addWidget(self.title_right)
         header.addStretch()
         
         self.status_lbl = QLabel("Ожидание")
@@ -1167,12 +1057,195 @@ class MainWindow(QMainWindow):
             self._log("Telegram тест OK")
         except Exception as e:
             self._log(f"Ошибка: {e}")
+    
+    def _toggle_theme(self):
+        """Переключить тему между тёмной и светлой"""
+        current = get_current_theme()
+        new_theme = "light" if current == "dark" else "dark"
+        set_theme(new_theme)
+        
+        # Обновляем иконку кнопки
+        self.theme_btn.setText("☀️" if new_theme == "dark" else "🌙")
+        
+        # Сохраняем выбор
+        self.settings.setValue("theme", new_theme)
+        
+        # Перезагружаем UI
+        self._apply_theme()
+        self._log(f"Тема: {'тёмная' if new_theme == 'dark' else 'светлая'}")
+    
+    def _apply_theme(self):
+        """Применить текущую тему ко всем элементам"""
+        is_light = get_current_theme() == "light"
+        
+        # Обновляем фон
+        if hasattr(self, 'bg'):
+            self.bg.update()
+        
+        # Обновляем кнопку темы
+        self.theme_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {COLORS['bg_hover']};
+                border: none;
+                border-radius: 10px;
+                font-size: 18px;
+            }}
+            QPushButton:hover {{
+                background: {COLORS['accent']};
+            }}
+        """)
+        
+        # Обновляем лог
+        self.log.setStyleSheet(f"""
+            QPlainTextEdit {{
+                background: {COLORS['bg_card']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 12px;
+                padding: 10px;
+                font-family: 'Consolas', monospace;
+                font-size: 12px;
+                color: {COLORS['text']};
+            }}
+        """)
+        
+        # Обновляем статус
+        if self.worker and self.worker.isRunning():
+            self.status_lbl.setStyleSheet(f"""
+                font-size: 12px; color: {COLORS['success']};
+                background: rgba(0, 217, 165, 0.15); padding: 6px 12px; border-radius: 8px;
+            """)
+        else:
+            self.status_lbl.setStyleSheet(f"""
+                font-size: 12px; color: {COLORS['text_muted']};
+                background: {COLORS['bg_hover']}; padding: 6px 12px; border-radius: 8px;
+            """)
+        
+        # Обновляем комбобоксы
+        combo_style = f"""
+            QComboBox {{
+                background: {COLORS["bg_card"]};
+                border: 2px solid {COLORS["border"]};
+                border-radius: 14px;
+                padding: 12px 16px;
+                font-size: 14px;
+                color: {COLORS["text"]};
+            }}
+            QComboBox:hover {{ border-color: {COLORS["accent"]}; }}
+            QComboBox::drop-down {{ border: none; width: 35px; }}
+            QComboBox::down-arrow {{
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid {COLORS["text_muted"]};
+            }}
+            QComboBox QAbstractItemView {{
+                background: {COLORS["bg_card"]};
+                border: 2px solid {COLORS["border"]};
+                border-radius: 12px;
+                selection-background-color: {COLORS["accent"]};
+                color: {COLORS["text"]};
+            }}
+        """
+        self.exchange.setStyleSheet(combo_style)
+        self.tf.setStyleSheet(combo_style)
+        
+        # Обновляем инпуты
+        input_style = f"""
+            QLineEdit {{
+                background: {COLORS["bg_card"]};
+                border: 2px solid {COLORS["border"]};
+                border-radius: 14px;
+                padding: 12px 16px;
+                font-size: 14px;
+                color: {COLORS["text"]};
+            }}
+            QLineEdit:focus {{
+                border-color: {COLORS["accent"]};
+            }}
+        """
+        self.tg_token.setStyleSheet(input_style)
+        self.tg_chat.setStyleSheet(input_style)
+        
+        # Обновляем кнопки
+        self.test_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {COLORS["bg_hover"]};
+                border: 1px solid {COLORS["border"]};
+                border-radius: 10px;
+                color: {COLORS["text"]};
+                font-size: 12px;
+                font-weight: 600;
+                padding: 8px 16px;
+            }}
+            QPushButton:hover {{
+                background: {COLORS["accent"]};
+                border-color: {COLORS["accent"]};
+            }}
+        """)
+        
+        # Обновляем карточки сигналов
+        for card in self.cards.values():
+            card.name_lbl.setStyleSheet(f"font-size: 18px; font-weight: 800; color: {COLORS['text']}; background: transparent;")
+            card.time_lbl.setStyleSheet(f"font-size: 10px; color: {COLORS['text_muted']}; background: transparent;")
+            card.action_lbl.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {COLORS['text_muted']}; background: transparent;")
+            card._update_card_style()
+            # Обновляем бейджи
+            for badge in card.badges.values():
+                badge._update_style()
+        
+        # Обновляем панели (левую и правую)
+        if hasattr(self, 'left_panel'):
+            self.left_panel.update_theme()
+        if hasattr(self, 'right_panel'):
+            self.right_panel.update_theme()
+        
+        # Обновляем заголовки
+        if hasattr(self, 'title_left'):
+            self.title_left.setStyleSheet(f"font-size: 22px; font-weight: 800; color: {COLORS['text']}; background: transparent; border: none;")
+        if hasattr(self, 'title_right'):
+            self.title_right.setStyleSheet(f"font-size: 22px; font-weight: 800; color: {COLORS['text']}; background: transparent; border: none;")
+        
+        # Обновляем лейблы
+        label_style = f"font-size: 13px; color: {COLORS['text_muted']}; background: transparent; border: none;"
+        for lbl in [self.lbl_exchange, self.lbl_tf, self.lbl_tg, self.lbl_theme]:
+            lbl.setStyleSheet(label_style)
             
     def _open_chart(self, symbol: str):
         """Открыть график в отдельном окне"""
         chart = ChartWindow(symbol)
         chart.show()
         self.chart_windows.append(chart)
+    
+    def _load_bybit_icon(self):
+        """Загружает иконку Bybit для кнопки терминала"""
+        self._icon_manager = QNetworkAccessManager()
+        url = "https://s2.coinmarketcap.com/static/img/exchanges/64x64/521.png"
+        request = QNetworkRequest(QUrl(url))
+        reply = self._icon_manager.get(request)
+        reply.finished.connect(lambda: self._on_bybit_icon_loaded(reply))
+        
+    def _on_bybit_icon_loaded(self, reply):
+        """Callback когда иконка загружена"""
+        if reply.error() == QNetworkReply.NoError:
+            data = reply.readAll()
+            pixmap = QPixmap()
+            pixmap.loadFromData(data.data())
+            if not pixmap.isNull():
+                icon_pixmap = pixmap.scaled(20, 20, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                from PySide6.QtGui import QIcon
+                self.terminal_btn.setIcon(QIcon(icon_pixmap))
+                self.terminal_btn.setIconSize(QSize(20, 20))
+        reply.deleteLater()
+    
+    def _open_terminal(self):
+        """Открыть терминал Bybit"""
+        # Ленивый импорт чтобы избежать циклических зависимостей
+        from ui.terminal_window import BybitTerminal
+        
+        if not hasattr(self, 'terminal') or self.terminal is None:
+            self.terminal = BybitTerminal(self)
+        self.terminal.show()
+        self.terminal.raise_()
+        self.terminal.activateWindow()
         
     def _get_selected_coins(self) -> List[str]:
         """Получить текущий список выбранных монет (для горячего обновления)"""
@@ -1281,6 +1354,10 @@ class MainWindow(QMainWindow):
         if idx >= 0: self.tf.setCurrentIndex(idx)
         self.tg_token.setText(token)
         self.tg_chat.setText(chat)
+        
+        # Всегда тёмная тема по умолчанию
+        set_theme("dark")
+        self.theme_btn.setText("🌙")
         
     def _animate_open(self):
         effect = QGraphicsOpacityEffect(self)
