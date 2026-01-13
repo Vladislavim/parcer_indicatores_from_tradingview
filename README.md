@@ -4,7 +4,7 @@
 <img src="https://capsule-render.vercel.app/api?type=waving&color=0:F7A600,100:FF6B6B&height=200&section=header&text=⚡%20LOCAL%20SIGNALS%20PRO&fontSize=50&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=Умный%20мониторинг%20криптосигналов&descSize=20&descAlignY=55" width="100%">
 
 <!-- View Counter -->
-<img src="https://komarev.com/ghpvc/?username=Vladislavim-local-signals&label=👀%20ПРОСМОТРОВ&color=F7A600&style=for-the-badge" alt="Views">
+<img src="https://komarev.com/ghpvc/?username=Vladislavim-local-signals&label=ПРОСМОТРОВ&color=brightgreen&style=for-the-badge" alt="Views">
 
 <br><br>
 
