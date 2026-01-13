@@ -1,22 +1,46 @@
-# Local Signals Pro
+<div align="center">
 
-<p align="center">
-  <img src="local-signals-app/content/preview.png" alt="Local Signals Pro" width="600">
-</p>
+# ⚡ Local Signals Pro
 
-Приложение для мониторинга торговых сигналов криптовалют с умной фильтрацией по старшему таймфрейму.
+### Умный мониторинг криптосигналов с автоторговлей
 
-## Возможности
+<img src="local-signals-app/content/preview.png" alt="Local Signals Pro" width="700">
 
-- **10 монет**: BTC, ETH, SOL, XRP, DOGE, ADA, AVAX, LINK, SUI, WIF
-- **3 индикатора**: EMA Market Structure, Smart Money Breakout, Trend Targets
-- **Конфлюенс**: сигнал только когда 2+ индикатора сходятся
-- **HTF фильтр**: не торгует против тренда старшего таймфрейма
-- **Telegram уведомления**: мгновенные алерты с антиспамом
-- **Bybit Terminal**: встроенный терминал для торговли на Testnet
-- **Автоторговля**: автоматическое открытие/закрытие позиций по сигналам
+[![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)](https://python.org)
+[![PySide6](https://img.shields.io/badge/PySide6-Qt-green?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython/)
+[![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-lightgrey)](../../releases)
 
-## Установка
+</div>
+
+---
+
+## 📥 Установка
+
+<table>
+<tr>
+<td width="50%">
+
+### 🪟 Windows
+
+1. Скачай **`LocalSignalsPro.exe`** из [Releases](../../releases)
+2. Запусти — готово!
+
+</td>
+<td width="50%">
+
+### 🍎 macOS
+
+1. Скачай **`LocalSignalsPro.app.zip`** из [Releases](../../releases)
+2. Распакуй и перемести в **Applications**
+3. ПКМ → Открыть (первый запуск)
+
+</td>
+</tr>
+</table>
+
+<details>
+<summary>🐍 Из исходников (все платформы)</summary>
 
 ```bash
 cd local-signals-app
@@ -24,49 +48,123 @@ pip install -r requirements.txt
 python run.py
 ```
 
-## Режимы запуска
+</details>
 
-В `run.py` можно выбрать режим:
-- **modern_app** (по умолчанию) — отдельные окна для сигналов и терминала
-- **unified_app** — единое окно с разделением на панели
+---
 
-## Как работает
+## ✨ Возможности
 
-1. Выбери биржу и таймфрейм
-2. Отметь монеты для уведомлений
-3. Введи Telegram токен и chat ID
-4. Нажми "Запустить"
+<table>
+<tr>
+<td width="33%" align="center">
 
-Приложение анализирует индикаторы и отправляет сигнал когда:
-- Минимум 2 из 3 индикаторов показывают одно направление
-- Сигнал совпадает с трендом на старшем ТФ (или HTF нейтральный)
+### 📊 Мониторинг
+**10 монет** в реальном времени  
+BTC • ETH • SOL • XRP • DOGE  
+ADA • AVAX • LINK • SUI • WIF
 
-## Bybit Terminal
+</td>
+<td width="33%" align="center">
 
-- Подключение к Bybit Testnet
-- Ручная торговля с расчётом маржи
-- Автоторговля по конфлюенс стратегии
-- Автозакрытие позиций при смене сигнала
+### 🎯 Конфлюенс
+**3 индикатора** для точности  
+EMA Market Structure  
+Smart Money Breakout  
+Trend Targets
 
-## Сила сигнала
+</td>
+<td width="33%" align="center">
 
-| Индикаторы | Сила | Описание |
-|------------|------|----------|
-| 3/3 | 🔥 Сильный | Все индикаторы сходятся |
-| 2/3 | ✅ Хороший | Большинство подтверждает |
-| 1/3 | ❌ Слабый | Игнорируется |
+### 🤖 Автоторговля
+**Bybit Terminal** встроен  
+Автооткрытие позиций  
+Автозакрытие по сигналу  
+HTF фильтрация
 
-## HTF фильтр
+</td>
+</tr>
+</table>
 
-| Рабочий ТФ | Старший ТФ |
-|------------|------------|
-| 1m | 15m |
-| 5m | 1h |
-| 15m, 1h | 4h |
-| 4h | 1d |
+---
 
-## Требования
+## 🔥 Как работает
 
-- Python 3.10+
-- PySide6
-- ccxt
+```
+┌─────────────────────────────────────────────────────────────┐
+│  📈 Индикатор 1: EMA Market Structure    →  🟢 BULL        │
+│  📈 Индикатор 2: Smart Money Breakout    →  🟢 BULL        │
+│  📈 Индикатор 3: Trend Targets           →  🔴 BEAR        │
+├─────────────────────────────────────────────────────────────┤
+│  🎯 Конфлюенс: 2/3 BULL                  →  ✅ СИГНАЛ ЛОНГ │
+│  📊 HTF фильтр: 4h тренд BULL            →  ✅ ПОДТВЕРЖДЁН │
+└─────────────────────────────────────────────────────────────┘
+                           ↓
+              📱 Telegram уведомление
+              🤖 Автооткрытие позиции
+```
+
+| Сила сигнала | Индикаторы | Действие |
+|:------------:|:----------:|:--------:|
+| 🔥 Сильный | 3/3 | Торгуем |
+| ✅ Хороший | 2/3 | Торгуем |
+| ❌ Слабый | 1/3 | Пропуск |
+
+---
+
+## 📱 Telegram алерты
+
+Мгновенные уведомления с полной информацией:
+
+```
+🔥 BTCUSDT — ЛОНГ 📈
+
+⚡ Сильный [███████████]
+🟢 HTF (4h): бычий
+
+🟢 EMA: Bull breakout  
+🟢 SM: Smart money buy  
+🔴 Trend: Consolidation
+
+⏰ 14:32:15 | ТФ: 1h
+```
+
+---
+
+## 🛠 Сборка
+
+<details>
+<summary>Windows (.exe)</summary>
+
+```bash
+pip install pyinstaller
+pyinstaller LocalSignalsPro.spec
+# → dist/LocalSignalsPro.exe
+```
+
+</details>
+
+<details>
+<summary>macOS (.app)</summary>
+
+```bash
+pip install pyinstaller
+pyinstaller --onefile --windowed --name LocalSignalsPro run.py
+# → dist/LocalSignalsPro.app
+```
+
+</details>
+
+---
+
+## 📋 Требования
+
+- **Готовые сборки**: Windows 10+ / macOS 11+
+- **Из исходников**: Python 3.10+, PySide6, ccxt
+
+---
+
+<div align="center">
+
+**[⬇️ Скачать](../../releases)** · **[🐛 Баги](../../issues)** · **[💡 Идеи](../../discussions)**
+
+</div>
