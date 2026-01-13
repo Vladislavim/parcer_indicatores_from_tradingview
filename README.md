@@ -95,18 +95,18 @@ python run.py
 <table>
 <tr>
 <td align="center" width="33%">
-<img src="https://img.icons8.com/fluency/96/combo-chart.png" width="60">
-<h3>📊 10 Монет</h3>
+<h1>📊</h1>
+<h3>10 Монет</h3>
 BTC • ETH • SOL • XRP<br>DOGE • ADA • AVAX<br>LINK • SUI • WIF
 </td>
 <td align="center" width="33%">
-<img src="https://img.icons8.com/fluency/96/goal.png" width="60">
-<h3>🎯 Конфлюенс</h3>
+<h1>🎯</h1>
+<h3>Конфлюенс</h3>
 EMA Market Structure<br>Smart Money Breakout<br>Trend Targets
 </td>
 <td align="center" width="33%">
-<img src="https://img.icons8.com/fluency/96/robot-2.png" width="60">
-<h3>🤖 Автоторговля</h3>
+<h1>🤖</h1>
+<h3>Автоторговля</h3>
 Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 </td>
 </tr>
@@ -131,7 +131,7 @@ Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 
 <br><br>
 
-<img src="https://img.icons8.com/fluency/48/down-arrow.png" width="30">
+⬇️
 
 <br><br>
 
@@ -141,7 +141,7 @@ Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 
 <br><br>
 
-<img src="https://img.icons8.com/fluency/48/down-arrow.png" width="30">
+⬇️
 
 <br><br>
 
