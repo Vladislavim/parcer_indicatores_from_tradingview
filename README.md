@@ -1,10 +1,10 @@
 <div align="center">
 
+<img src="local-signals-app/content/ui git.jpg" alt="Local Signals Pro" width="100%">
+
 # ⚡ Local Signals Pro
 
 ### Умный мониторинг криптосигналов с автоторговлей
-
-<img src="local-signals-app/content/ui git.jpg" alt="Local Signals Pro" width="700">
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)](https://python.org)
 [![PySide6](https://img.shields.io/badge/PySide6-Qt-green?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython/)
