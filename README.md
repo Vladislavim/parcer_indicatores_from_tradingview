@@ -1,17 +1,24 @@
 <div align="center">
 
-<img src="local-signals-app/content/ui git.jpg" alt="Local Signals Pro" width="100%">
+<!-- Header Banner -->
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:F7A600,100:FF6B6B&height=200&section=header&text=⚡%20LOCAL%20SIGNALS%20PRO&fontSize=50&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=Умный%20мониторинг%20криптосигналов&descSize=20&descAlignY=55" width="100%">
 
-<br>
+<!-- View Counter -->
+<img src="https://komarev.com/ghpvc/?username=Vladislavim-local-signals&label=👀%20ПРОСМОТРОВ&color=F7A600&style=for-the-badge" alt="Views">
 
-# ⚡ LOCAL SIGNALS PRO
+<br><br>
 
-<h3>
-  <img src="https://readme-typing-svg.herokuapp.com?font=Fira+Code&weight=600&size=24&pause=1000&color=F7A600&center=true&vCenter=true&width=600&lines=Умный+мониторинг+криптосигналов;Автоторговля+на+Bybit;3+индикатора+%2B+HTF+фильтр;Telegram+алерты+24%2F7" alt="Typing SVG" />
-</h3>
+<!-- Preview Image -->
+<img src="local-signals-app/content/ui git.jpg" alt="Local Signals Pro" width="90%" style="border-radius: 20px;">
 
-<br>
+<br><br>
 
+<!-- Typing Animation -->
+<img src="https://readme-typing-svg.herokuapp.com?font=Fira+Code&weight=600&size=22&pause=1000&color=F7A600&center=true&vCenter=true&width=600&lines=🤖+Автоторговля+на+Bybit;📊+3+индикатора+%2B+HTF+фильтр;📱+Telegram+алерты+24%2F7;🔥+Конфлюенс+стратегия" alt="Typing SVG" />
+
+<br><br>
+
+<!-- Main Buttons -->
 <a href="../../releases"><img src="https://img.shields.io/badge/⬇️_СКАЧАТЬ-EXE%20%7C%20APP-F7A600?style=for-the-badge&logoColor=white" alt="Download"></a>
 &nbsp;&nbsp;
 <a href="../../issues"><img src="https://img.shields.io/badge/🐛_БАГИ-СООБЩИТЬ-FF6B6B?style=for-the-badge" alt="Issues"></a>
@@ -20,14 +27,17 @@
 
 <br><br>
 
+<!-- Tech Badges -->
 <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
 <img src="https://img.shields.io/badge/PySide6-Qt6-41CD52?style=flat-square&logo=qt&logoColor=white" alt="Qt">
 <img src="https://img.shields.io/badge/Bybit-API-F7A600?style=flat-square&logo=bitcoin&logoColor=white" alt="Bybit">
 <img src="https://img.shields.io/badge/Telegram-Bot-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram">
+<img src="https://img.shields.io/github/last-commit/Vladislavim/parcer_indicatores_from_tradingview?style=flat-square&color=00D9A5" alt="Last Commit">
 
-<br><br>
+<br>
 
----
+<!-- Divider -->
+<img src="https://user-images.githubusercontent.com/73097560/115834477-dbab4500-a447-11eb-908a-139a6edaec5c.gif" width="100%">
 
 <br>
 
@@ -75,7 +85,8 @@ python run.py
 
 <br>
 
----
+<!-- Divider -->
+<img src="https://user-images.githubusercontent.com/73097560/115834477-dbab4500-a447-11eb-908a-139a6edaec5c.gif" width="100%">
 
 <br>
 
@@ -103,7 +114,8 @@ Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 
 <br>
 
----
+<!-- Divider -->
+<img src="https://user-images.githubusercontent.com/73097560/115834477-dbab4500-a447-11eb-908a-139a6edaec5c.gif" width="100%">
 
 <br>
 
@@ -119,9 +131,9 @@ Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 
 <br><br>
 
-⬇️
+<img src="https://img.icons8.com/fluency/48/down-arrow.png" width="30">
 
-<br>
+<br><br>
 
 <img src="https://img.shields.io/badge/🎯_КОНФЛЮЕНС_2%2F3-СИГНАЛ_ЛОНГ-F7A600?style=for-the-badge" alt="Confluence">
 <br><br>
@@ -129,9 +141,9 @@ Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 
 <br><br>
 
-⬇️
+<img src="https://img.icons8.com/fluency/48/down-arrow.png" width="30">
 
-<br>
+<br><br>
 
 <img src="https://img.shields.io/badge/📱_TELEGRAM-УВЕДОМЛЕНИЕ-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram">
 &nbsp;
@@ -147,7 +159,8 @@ Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 
 <br>
 
----
+<!-- Divider -->
+<img src="https://user-images.githubusercontent.com/73097560/115834477-dbab4500-a447-11eb-908a-139a6edaec5c.gif" width="100%">
 
 <br>
 
@@ -172,7 +185,8 @@ Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 
 <br>
 
----
+<!-- Divider -->
+<img src="https://user-images.githubusercontent.com/73097560/115834477-dbab4500-a447-11eb-908a-139a6edaec5c.gif" width="100%">
 
 <br>
 
@@ -200,17 +214,8 @@ pyinstaller --onefile --windowed --name LocalSignalsPro run.py
 
 <br>
 
----
-
-<br>
-
-## 📊 Статистика
-
-<img src="https://img.shields.io/badge/📈_COMING-SOON-2a2a35?style=for-the-badge" alt="Coming Soon">
-
-<br><br>
-
----
+<!-- Divider -->
+<img src="https://user-images.githubusercontent.com/73097560/115834477-dbab4500-a447-11eb-908a-139a6edaec5c.gif" width="100%">
 
 <br>
 
@@ -222,20 +227,30 @@ pyinstaller --onefile --windowed --name LocalSignalsPro run.py
 
 <br><br>
 
-Этот проект распространяется под лицензией **MIT**.
-
-Ты можешь свободно использовать, копировать, модифицировать и распространять код.
+Свободно используй, копируй и модифицируй ✌️
 
 <br>
 
----
+<!-- Divider -->
+<img src="https://user-images.githubusercontent.com/73097560/115834477-dbab4500-a447-11eb-908a-139a6edaec5c.gif" width="100%">
 
 <br>
+
+### ⭐ Поддержи проект
+
+<a href="../../stargazers">
+  <img src="https://img.shields.io/github/stars/Vladislavim/parcer_indicatores_from_tradingview?style=social" alt="Stars">
+</a>
+&nbsp;&nbsp;&nbsp;
+<a href="../../network/members">
+  <img src="https://img.shields.io/github/forks/Vladislavim/parcer_indicatores_from_tradingview?style=social" alt="Forks">
+</a>
+
+<br><br>
 
 **Made with ❤️ and ☕**
 
-<br>
-
-<img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=12&height=100&section=footer" width="100%">
+<!-- Footer Banner -->
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:F7A600,100:FF6B6B&height=120&section=footer" width="100%">
 
 </div>
