@@ -145,9 +145,26 @@ class Worker(QThread):
         if symbol in self.htf_trend and (now - last_update) < 300:
             return self.htf_trend[symbol]
         
-        tf = self.cfg["timeframe"]
+        # Горячее обновление таймфрейма и биржи
+        get_timeframe = self.cfg.get("get_timeframe")
+        if get_timeframe and callable(get_timeframe):
+            try:
+                tf = get_timeframe()
+            except:
+                tf = self.cfg["timeframe"]
+        else:
+            tf = self.cfg["timeframe"]
+            
+        get_source = self.cfg.get("get_source")
+        if get_source and callable(get_source):
+            try:
+                src = get_source()
+            except:
+                src = self.cfg["source"]
+        else:
+            src = self.cfg["source"]
+        
         htf = HTF_MAP.get(tf, "4h")
-        src = self.cfg["source"]
         
         try:
             # Используем EMA индикатор для определения тренда на HTF
@@ -185,9 +202,29 @@ class Worker(QThread):
         # если что-то другое — считаем, что индикатор не дал сигнал
         return IndicatorState(status="na", detail=fallback_detail, raw={"raw": result})
 
+    def _get_live_source(self) -> str:
+        """Получить актуальную биржу (с горячим обновлением)"""
+        get_source = self.cfg.get("get_source")
+        if get_source and callable(get_source):
+            try:
+                return get_source()
+            except:
+                pass
+        return self.cfg["source"]
+    
+    def _get_live_timeframe(self) -> str:
+        """Получить актуальный таймфрейм (с горячим обновлением)"""
+        get_timeframe = self.cfg.get("get_timeframe")
+        if get_timeframe and callable(get_timeframe):
+            try:
+                return get_timeframe()
+            except:
+                pass
+        return self.cfg["timeframe"]
+
     def _calc_ema_ms(self, symbol: str) -> IndicatorState:
-        src = self.cfg["source"]
-        tf = self.cfg["timeframe"]
+        src = self._get_live_source()
+        tf = self._get_live_timeframe()
         try:
             res = ema_ms_get_signal(symbol, tf, src)
             state = self._to_state(res, "EMA/BOS")
@@ -197,8 +234,8 @@ class Worker(QThread):
             return IndicatorState(status="na", detail="EMA/BOS error", raw={"error": str(e)})
 
     def _calc_smart_money(self, symbol: str) -> IndicatorState:
-        src = self.cfg["source"]
-        tf = self.cfg["timeframe"]
+        src = self._get_live_source()
+        tf = self._get_live_timeframe()
         try:
             res = sm_get_signal(symbol, tf, src)
             state = self._to_state(res, "Smart Money")
@@ -208,8 +245,8 @@ class Worker(QThread):
             return IndicatorState(status="na", detail="SmartMoney error", raw={"error": str(e)})
 
     def _calc_trend_targets(self, symbol: str) -> IndicatorState:
-        src = self.cfg["source"]
-        tf = self.cfg["timeframe"]
+        src = self._get_live_source()
+        tf = self._get_live_timeframe()
         try:
             res = tt_get_signal(symbol, tf, src)
             state = self._to_state(res, "Trend")
@@ -253,7 +290,7 @@ class Worker(QThread):
     ) -> str:
         """Форматирование сообщения для конфлюенс-сигнала"""
         
-        tf = self.cfg.get('timeframe', '1h')
+        tf = self._get_live_timeframe()
         htf = HTF_MAP.get(tf, "4h")
         
         # Эмодзи и текст в зависимости от силы
@@ -364,7 +401,9 @@ class Worker(QThread):
             return
         
         # === HTF ФИЛЬТР ===
-        htf_trend = self._get_htf_trend(f"{symbol}USDT.P")
+        # symbol уже в формате "BTCUSDT" (без .P)
+        htf_symbol = f"{symbol}.P" if not symbol.endswith(".P") else symbol
+        htf_trend = self._get_htf_trend(htf_symbol)
         
         # Не торгуем против тренда на старшем ТФ
         if direction == "bull" and htf_trend == "bear":
@@ -424,8 +463,8 @@ class Worker(QThread):
     # ------- основной цикл -------
 
     def run(self):
-        src = self.cfg["source"]
-        tf = self.cfg["timeframe"]
+        src = self._get_live_source()
+        tf = self._get_live_timeframe()
         symbols: List[str] = self.cfg["symbols"]
         enabled_inds: List[str] = self.cfg["indicators"]
         
@@ -463,10 +502,27 @@ class Worker(QThread):
         if tf in signal_info:
             self.log.emit(f"📊 {signal_info[tf]}")
             self.notification.emit(signal_info[tf], "info")
+        
+        # Отслеживаем изменения настроек
+        last_tf = tf
+        last_src = src
 
         while not self._stop.is_set():
             loop_start = time.time()
             self.stats["total_cycles"] += 1
+            
+            # Проверяем изменения настроек
+            current_tf = self._get_live_timeframe()
+            current_src = self._get_live_source()
+            
+            if current_tf != last_tf or current_src != last_src:
+                poll_sec = timeframe_intervals.get(current_tf, 60)
+                self.log.emit(f"⚡ Настройки обновлены: {current_src}, ТФ={current_tf}, интервал={poll_sec}с")
+                # Сбрасываем кэш HTF при смене настроек
+                self.htf_trend.clear()
+                self.htf_last_update.clear()
+                last_tf = current_tf
+                last_src = current_src
             
             try:
                 successful_symbols = 0

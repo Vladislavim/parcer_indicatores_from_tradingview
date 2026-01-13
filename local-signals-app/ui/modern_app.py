@@ -955,6 +955,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Local Signals Pro")
         
+        # Иконка приложения
+        import os
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "content", "icon.ico")
+        if os.path.exists(icon_path):
+            from PySide6.QtGui import QIcon
+            self.setWindowIcon(QIcon(icon_path))
+        
         self.settings = QSettings("LocalSignals", "Pro")
         self.worker: Optional[Worker] = None
         self.cards: Dict[str, SignalCard] = {}
@@ -1170,6 +1177,14 @@ class MainWindow(QMainWindow):
     def _get_selected_coins(self) -> List[str]:
         """Получить текущий список выбранных монет (для горячего обновления)"""
         return [s for s, cb in self.coin_cbs.items() if cb.isChecked()]
+    
+    def _get_current_source(self) -> str:
+        """Получить текущую биржу (для горячего обновления)"""
+        return self.exchange.currentData()
+    
+    def _get_current_timeframe(self) -> str:
+        """Получить текущий таймфрейм (для горячего обновления)"""
+        return self.tf.currentData()
 
         
     def _start(self):
@@ -1192,6 +1207,8 @@ class MainWindow(QMainWindow):
             "tg_thread": THREAD_ID_DEV,
             "tg_mention": "",
             "get_alert_symbols": self._get_selected_coins,  # Callback для горячего обновления
+            "get_source": self._get_current_source,  # Callback для горячего обновления биржи
+            "get_timeframe": self._get_current_timeframe,  # Callback для горячего обновления ТФ
         }
         
         self._save_settings()
@@ -1292,6 +1309,13 @@ class MainWindow(QMainWindow):
 def run():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    
+    # Иконка приложения (для панели задач)
+    import os
+    from PySide6.QtGui import QIcon
+    icon_path = os.path.join(os.path.dirname(__file__), "..", "content", "icon.ico")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
     
     # Шрифт
     font = QFont("Segoe UI", 10)
