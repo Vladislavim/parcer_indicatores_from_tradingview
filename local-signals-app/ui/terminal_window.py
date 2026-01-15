@@ -34,12 +34,20 @@ BYBIT_LOGO_URL = "https://s2.coinmarketcap.com/static/img/exchanges/64x64/521.pn
 
 
 class AutoTradeWorker(QThread):
-    """Воркер для автоторговли в отдельном потоке"""
+    """
+    Воркер для автоторговли в отдельном потоке.
+    
+    Комбинированная защита позиций:
+    1. SL/TP ордера на бирже — жёсткий стоп и тейк (выставляются при открытии)
+    2. Автозакрытие по сигналу — если индикаторы развернулись (конфлюенс 2/3)
+    3. Trailing Stop — подтягивает стоп в безубыток при профите >= 2%
+    """
     log_signal = Signal(str)
     profit_signal = Signal(float)
     refresh_signal = Signal()
     open_position_signal = Signal(str, str, float, float, float, int)  # symbol, side, size, sl, tp, leverage
     close_position_signal = Signal(str, float, str)  # symbol, size, side
+    journal_signal = Signal(dict)  # Сигнал для записи в журнал
     
     def __init__(self, exchange, settings: dict, get_signal_func, get_htf_func):
         super().__init__()
@@ -48,9 +56,32 @@ class AutoTradeWorker(QThread):
         self.get_signal = get_signal_func
         self.get_htf = get_htf_func
         self._stop = False
+        self._trailing_activated = {}  # Отслеживаем для каких позиций уже активирован trailing
         
     def stop(self):
         self._stop = True
+        
+    def _update_trailing_stop(self, symbol: str, new_sl: float, side: str, coin: str):
+        """Обновляет trailing stop для позиции"""
+        # Проверяем, не активировали ли уже trailing для этой позиции
+        if symbol in self._trailing_activated:
+            return
+            
+        try:
+            # Пытаемся обновить SL через Bybit API
+            # Для Bybit используем set_trading_stop
+            params = {
+                'stopLoss': round(new_sl, 2),
+                'positionIdx': 0,  # One-way mode
+            }
+            
+            self.exchange.set_trading_stop(symbol, params)
+            self._trailing_activated[symbol] = True
+            self.log_signal.emit(f"🔒 {coin} Trailing: SL → ${new_sl:,.2f} (безубыток)")
+        except Exception as e:
+            # Если API не поддерживает, просто логируем
+            if "not supported" not in str(e).lower():
+                self.log_signal.emit(f"⚠️ Trailing {coin}: {e}")
         
     def run(self):
         """Выполняет проверку сигналов в отдельном потоке"""
@@ -63,7 +94,7 @@ class AutoTradeWorker(QThread):
         if not self.exchange:
             return
             
-        self.log_signal.emit("🔍 Проверяю сигналы...")
+        # Тихая проверка — логируем только важное
         
         leverage = self.settings['leverage']
         risk_pct = self.settings['risk_pct']
@@ -76,27 +107,56 @@ class AutoTradeWorker(QThread):
             usdt = balance.get('USDT', {})
             available = float(usdt.get('free') or 0)
         except Exception as e:
-            self.log_signal.emit(f"⚠️ Ошибка получения баланса: {e}")
-            return
+            return  # Тихо пропускаем
         
         if available < 10:
-            self.log_signal.emit("⚠️ Недостаточно средств")
-            return
-        
-        self.log_signal.emit(f"⚙️ ТФ: {tf} | Плечо: {leverage}x | Риск: {risk_pct}%")
+            return  # Тихо пропускаем
         
         if not selected_coins:
-            self.log_signal.emit("⚠️ Не выбраны монеты")
-            return
+            return  # Тихо пропускаем
         
-        # === АВТОЗАКРЫТИЕ ===
+        # === TRAILING STOP ===
+        # Подтягиваем стоп-лосс при достижении профита
         try:
             positions = self.exchange.fetch_positions()
             open_positions = [p for p in positions if float(p.get('contracts') or 0) > 0]
         except Exception as e:
-            self.log_signal.emit(f"⚠️ Ошибка получения позиций: {e}")
             open_positions = []
         
+        for pos in open_positions:
+            if self._stop:
+                return
+            
+            pos_symbol = pos.get('symbol', '')
+            pos_side = (pos.get('side') or '').lower()
+            pos_pnl_pct = float(pos.get('percentage') or 0)
+            entry_price = float(pos.get('entryPrice') or 0)
+            
+            coin_from_pos = pos_symbol.split('/')[0] if '/' in pos_symbol else pos_symbol.replace('USDT', '')
+            
+            if coin_from_pos not in selected_coins:
+                continue
+            
+            # Trailing Stop: если профит >= 2%, подтягиваем SL в безубыток + 0.5%
+            if pos_pnl_pct >= 2.0 and entry_price > 0:
+                try:
+                    ticker = self.exchange.fetch_ticker(pos_symbol)
+                    current_price = ticker['last']
+                    
+                    if pos_side == "long":
+                        # Новый SL = entry + 0.5%
+                        new_sl = entry_price * 1.005
+                        if current_price > new_sl:
+                            self._update_trailing_stop(pos_symbol, new_sl, pos_side, coin_from_pos)
+                    else:
+                        # Для шорта: новый SL = entry - 0.5%
+                        new_sl = entry_price * 0.995
+                        if current_price < new_sl:
+                            self._update_trailing_stop(pos_symbol, new_sl, pos_side, coin_from_pos)
+                except:
+                    pass
+        
+        # === АВТОЗАКРЫТИЕ ПО СИГНАЛУ ===
         for pos in open_positions:
             if self._stop:
                 return
@@ -126,13 +186,33 @@ class AutoTradeWorker(QThread):
             
             if should_close:
                 try:
+                    entry_price = float(pos.get('entryPrice') or 0)
+                    leverage = int(pos.get('leverage') or 1)
+                    
                     if pos_side == "long":
                         self.exchange.create_market_sell_order(pos_symbol, pos_size, {"reduceOnly": True})
                     else:
                         self.exchange.create_market_buy_order(pos_symbol, pos_size, {"reduceOnly": True})
                     
+                    # Получаем цену выхода
+                    ticker = self.exchange.fetch_ticker(pos_symbol)
+                    exit_price = ticker['last']
+                    
                     pnl_str = f"{'+'if pos_pnl>=0 else ''}${pos_pnl:.2f}"
                     self.log_signal.emit(f"✅ Закрыто {coin_from_pos} | PnL: {pnl_str}")
+                    
+                    # Отправляем в журнал
+                    self.journal_signal.emit({
+                        'symbol': pos_symbol,
+                        'side': pos_side,
+                        'strategy': 'AutoTrade (Индикаторы)',
+                        'entry_price': entry_price,
+                        'exit_price': exit_price,
+                        'size': pos_size,
+                        'leverage': leverage,
+                        'pnl_usd': pos_pnl,
+                        'close_reason': 'Signal'
+                    })
                     
                     if pos_pnl >= 5:
                         self.profit_signal.emit(pos_pnl)
@@ -140,6 +220,11 @@ class AutoTradeWorker(QThread):
                     self.log_signal.emit(f"❌ Ошибка закрытия: {e}")
         
         # === ОТКРЫТИЕ НОВЫХ ПОЗИЦИЙ ===
+        # Ограничение: максимум 2 позиции одновременно
+        if len(open_positions) >= 2:
+            self.refresh_signal.emit()
+            return
+            
         for coin in selected_coins:
             if self._stop:
                 return
@@ -156,56 +241,63 @@ class AutoTradeWorker(QThread):
             
             try:
                 signal, strength, details = self.get_signal(coin)
-                self.log_signal.emit(f"📊 {coin}: {details} → {signal} ({strength}/3)")
             except Exception as e:
-                self.log_signal.emit(f"⚠️ {coin}: ошибка сигнала - {e}")
-                continue
+                continue  # Тихо пропускаем ошибки
             
-            if signal in ["buy", "sell"] and strength >= 2:
-                try:
-                    htf_trend = self.get_htf(coin, tf)
-                except:
-                    htf_trend = "neutral"
+            # Пропускаем если нет сигнала или слабый конфлюенс
+            if signal not in ["buy", "sell"] or strength < 2:
+                continue
                 
-                if signal == "buy" and htf_trend == "bear":
-                    self.log_signal.emit(f"⏭️ {coin} ЛОНГ пропущен — HTF медвежий")
+            try:
+                htf_trend = self.get_htf(coin, tf)
+            except:
+                htf_trend = "neutral"
+            
+            # СТРОГИЙ HTF фильтр: торгуем ТОЛЬКО по тренду
+            if signal == "buy" and htf_trend != "bull":
+                continue  # Тихо пропускаем
+            if signal == "sell" and htf_trend != "bear":
+                continue  # Тихо пропускаем
+            
+            # Требуем 3/3 для надёжного сигнала
+            if strength < 3:
+                continue  # Тихо пропускаем
+            
+            htf_emoji = "🟢" if htf_trend == "bull" else "🔴" if htf_trend == "bear" else "⚪"
+            
+            try:
+                ticker = self.exchange.fetch_ticker(symbol)
+                price = ticker['last']
+                
+                position_usdt = available * (risk_pct / 100)
+                size = (position_usdt * leverage) / price
+                
+                if coin == "BTC":
+                    size = round(size, 3)
+                elif coin in ["ETH", "SOL"]:
+                    size = round(size, 2)
+                else:
+                    size = round(size, 1)
+                    
+                if size < 0.001:
                     continue
-                if signal == "sell" and htf_trend == "bull":
-                    self.log_signal.emit(f"⏭️ {coin} ШОРТ пропущен — HTF бычий")
-                    continue
                 
-                htf_emoji = "🟢" if htf_trend == "bull" else "🔴" if htf_trend == "bear" else "⚪"
+                # Более консервативные SL/TP
+                # SL 1% = -10% от маржи при 10x (терпимо)
+                # TP 3% = +30% от маржи при 10x (хороший R:R = 1:3)
+                sl_pct = 1.0
+                tp_pct = 3.0
                 
-                try:
-                    ticker = self.exchange.fetch_ticker(symbol)
-                    price = ticker['last']
-                    
-                    position_usdt = available * (risk_pct / 100)
-                    size = (position_usdt * leverage) / price
-                    
-                    if coin == "BTC":
-                        size = round(size, 3)
-                    elif coin in ["ETH", "SOL"]:
-                        size = round(size, 2)
-                    else:
-                        size = round(size, 1)
-                        
-                    if size < 0.001:
-                        continue
-                        
-                    sl_pct = 2.0
-                    tp_pct = 4.0
-                    
-                    direction = "ЛОНГ 📈" if signal == "buy" else "ШОРТ 📉"
-                    self.log_signal.emit(f"🔥 КОНФЛЮЕНС {direction} {coin} ({strength}/3) {htf_emoji}HTF")
-                    self.log_signal.emit(f"   {details}")
-                    self.log_signal.emit(f"   Размер: {size} | Плечо: {leverage}x")
-                    
-                    # Отправляем сигнал для открытия в главном потоке
-                    self.open_position_signal.emit(symbol, signal, size, sl_pct, tp_pct, leverage)
-                    
-                except Exception as e:
-                    self.log_signal.emit(f"❌ Ошибка открытия {coin}: {e}")
+                direction = "ЛОНГ 📈" if signal == "buy" else "ШОРТ 📉"
+                self.log_signal.emit(f"🔥 КОНФЛЮЕНС {direction} {coin} ({strength}/3) {htf_emoji}HTF")
+                self.log_signal.emit(f"   {details}")
+                self.log_signal.emit(f"   Размер: {size} | Плечо: {leverage}x")
+                
+                # Отправляем сигнал для открытия в главном потоке
+                self.open_position_signal.emit(symbol, signal, size, sl_pct, tp_pct, leverage)
+                
+            except Exception as e:
+                self.log_signal.emit(f"❌ Ошибка открытия {coin}: {e}")
         
         self.refresh_signal.emit()
 
@@ -216,19 +308,21 @@ class ConnectWorker(QThread):
     error = Signal(str)
     log = Signal(str)
     
-    def __init__(self, api_key: str, api_secret: str):
+    def __init__(self, api_key: str, api_secret: str, is_mainnet: bool = False):
         super().__init__()
         self.api_key = api_key
         self.api_secret = api_secret
+        self.is_mainnet = is_mainnet
         
     def run(self):
         try:
-            self.log.emit("🔄 Подключение к Bybit Testnet...")
+            network_name = "Bybit MAINNET" if self.is_mainnet else "Bybit Testnet"
+            self.log.emit(f"🔄 Подключение к {network_name}...")
             
             exchange = ccxt.bybit({
                 'apiKey': self.api_key,
                 'secret': self.api_secret,
-                'sandbox': True,
+                'sandbox': not self.is_mainnet,  # False для mainnet, True для testnet
                 'enableRateLimit': True,
                 'options': {'defaultType': 'swap'},
             })
@@ -1267,10 +1361,34 @@ class BybitTerminal(QMainWindow):
         self.order_panel.order_submitted.connect(self._submit_order)
         left.addWidget(self.order_panel)
         
-        # Auto trade panel
+        # Auto trade panel (старая конфлюенс стратегия)
         self.auto_panel = AutoTradePanel()
         self.auto_panel.toggle_btn.clicked.connect(self._toggle_auto_trade)
         left.addWidget(self.auto_panel)
+        
+        # Multi-strategy panel (новые профессиональные стратегии)
+        from ui.strategy_panel import StrategyPanel
+        self.strategy_panel = StrategyPanel()
+        self.strategy_panel.start_clicked.connect(self._start_multi_strategies)
+        self.strategy_panel.stop_clicked.connect(self._stop_multi_strategies)
+        left.addWidget(self.strategy_panel)
+        
+        # Grid Trading Bot
+        from ui.grid_panel import GridPanel
+        self.grid_panel = GridPanel()
+        self.grid_panel.start_clicked.connect(self._start_grid_bot)
+        self.grid_panel.stop_clicked.connect(self._stop_grid_bot)
+        left.addWidget(self.grid_panel)
+        
+        # Smart AI Bot
+        from ui.smart_ai_panel import SmartAIPanel
+        self.smart_ai_panel = SmartAIPanel()
+        self.smart_ai_panel.analyze_clicked.connect(self._analyze_smart_ai)
+        self.smart_ai_panel.trade_clicked.connect(self._trade_smart_ai)
+        left.addWidget(self.smart_ai_panel)
+        
+        # Загружаем стратегии
+        self._load_strategies()
         
         # Загружаем сохранённые настройки автоторговли
         self._load_auto_settings()
@@ -1307,7 +1425,40 @@ class BybitTerminal(QMainWindow):
         self.balance_widget = BalanceWidget()
         right.addWidget(self.balance_widget)
         
-        # Positions
+        # === ВКЛАДКИ ===
+        self.right_tabs = QTabWidget()
+        self.right_tabs.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: 1px solid {COLORS['border']};
+                border-radius: 8px;
+                background: transparent;
+            }}
+            QTabBar::tab {{
+                background: {COLORS['bg_card']};
+                color: {COLORS['text_muted']};
+                padding: 8px 16px;
+                margin-right: 4px;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                font-size: 12px;
+            }}
+            QTabBar::tab:selected {{
+                background: {COLORS['accent']};
+                color: white;
+                font-weight: 600;
+            }}
+            QTabBar::tab:hover:!selected {{
+                background: {COLORS['border']};
+            }}
+        """)
+        
+        # === TAB 1: Позиции ===
+        positions_tab = QWidget()
+        positions_layout = QVBoxLayout(positions_tab)
+        positions_layout.setContentsMargins(0, 8, 0, 0)
+        positions_layout.setSpacing(8)
+        
+        # Positions header
         pos_header = QHBoxLayout()
         pos_title = QLabel("📈 Открытые позиции")
         pos_title.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {COLORS['text']};")
@@ -1336,7 +1487,7 @@ class BybitTerminal(QMainWindow):
         self.refresh_btn.clicked.connect(self._refresh_data)
         pos_header.addWidget(self.refresh_btn)
         
-        right.addLayout(pos_header)
+        positions_layout.addLayout(pos_header)
         
         # Positions scroll
         self.positions_scroll = QScrollArea()
@@ -1350,25 +1501,37 @@ class BybitTerminal(QMainWindow):
                 background: {COLORS['accent']}; border-radius: 3px;
             }}
         """)
-        self.positions_scroll.setMinimumHeight(200)
+        self.positions_scroll.setMinimumHeight(150)
         
         self.positions_widget = QWidget()
-        self.positions_layout = QVBoxLayout(self.positions_widget)
-        self.positions_layout.setSpacing(8)
-        self.positions_layout.setContentsMargins(0, 0, 0, 0)
+        self.positions_inner_layout = QVBoxLayout(self.positions_widget)
+        self.positions_inner_layout.setSpacing(8)
+        self.positions_inner_layout.setContentsMargins(0, 0, 0, 0)
         
         self.no_pos_lbl = QLabel("Нет открытых позиций")
         self.no_pos_lbl.setAlignment(Qt.AlignCenter)
         self.no_pos_lbl.setStyleSheet(f"font-size: 13px; color: {COLORS['text_muted']}; padding: 30px;")
-        self.positions_layout.addWidget(self.no_pos_lbl)
-        self.positions_layout.addStretch()
+        self.positions_inner_layout.addWidget(self.no_pos_lbl)
+        self.positions_inner_layout.addStretch()
         
         self.positions_scroll.setWidget(self.positions_widget)
-        right.addWidget(self.positions_scroll)
+        positions_layout.addWidget(self.positions_scroll)
         
-        # Trade history
+        # Trade history (последние сделки)
         self.history_table = TradeHistoryTable()
-        right.addWidget(self.history_table, 1)
+        positions_layout.addWidget(self.history_table, 1)
+        
+        self.right_tabs.addTab(positions_tab, "📈 Позиции")
+        
+        # === TAB 2: Журнал сделок ===
+        from ui.trade_journal import TradeJournalWidget
+        self.journal_widget = TradeJournalWidget()
+        self.right_tabs.addTab(self.journal_widget, "📊 Журнал")
+        
+        right.addWidget(self.right_tabs, 1)
+        
+        # Для совместимости со старым кодом
+        self.positions_layout = self.positions_inner_layout
         
         main.addLayout(right, 1)
         layout.addLayout(main, 1)
@@ -1510,9 +1673,48 @@ class BybitTerminal(QMainWindow):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
         
+        # Header с переключателем сети
+        header = QHBoxLayout()
         title = QLabel("🔑 Подключение")
         title.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {COLORS['text']};")
-        layout.addWidget(title)
+        header.addWidget(title)
+        header.addStretch()
+        
+        # Переключатель Testnet/Mainnet
+        self.network_combo = QComboBox()
+        self.network_combo.addItem("🧪 Testnet", "testnet")
+        self.network_combo.addItem("🔴 MAINNET", "mainnet")
+        self.network_combo.setFixedWidth(110)
+        self.network_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {COLORS['bg_hover']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 10px;
+                color: {COLORS['text']};
+            }}
+            QComboBox::drop-down {{ border: none; width: 20px; }}
+            QComboBox QAbstractItemView {{
+                background: {COLORS['bg_card']};
+                color: {COLORS['text']};
+                selection-background-color: {COLORS['accent']};
+            }}
+        """)
+        # Загружаем сохранённую сеть
+        saved_network = self.settings.value("network", "testnet")
+        idx = self.network_combo.findData(saved_network)
+        if idx >= 0:
+            self.network_combo.setCurrentIndex(idx)
+        self.network_combo.currentIndexChanged.connect(self._on_network_changed)
+        header.addWidget(self.network_combo)
+        layout.addLayout(header)
+        
+        # Предупреждение для mainnet
+        self.mainnet_warning = QLabel("⚠️ РЕАЛЬНЫЕ ДЕНЬГИ!")
+        self.mainnet_warning.setStyleSheet(f"font-size: 10px; color: {COLORS['danger']}; font-weight: bold;")
+        self.mainnet_warning.setVisible(saved_network == "mainnet")
+        layout.addWidget(self.mainnet_warning)
         
         self.api_key = QLineEdit()
         self.api_key.setPlaceholderText("API Key")
@@ -1560,6 +1762,17 @@ class BybitTerminal(QMainWindow):
         layout.addWidget(self.connect_btn)
         
         return card
+    
+    def _on_network_changed(self, index):
+        """Обработка смены сети"""
+        network = self.network_combo.currentData()
+        self.mainnet_warning.setVisible(network == "mainnet")
+        self.settings.setValue("network", network)
+        
+        # Отключаемся если были подключены
+        if self.exchange:
+            self.exchange = None
+            self._log("🔄 Сеть изменена — переподключитесь")
         
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1567,22 +1780,46 @@ class BybitTerminal(QMainWindow):
             self.bg.setGeometry(self.centralWidget().rect())
             
     def _log(self, msg: str, msg_type: str = "info"):
-        """Добавляет сообщение в лог. msg_type: info, success, error, profit"""
+        """Добавляет сообщение в лог. msg_type: info, error, profit"""
         time_str = datetime.now().strftime('%H:%M:%S')
         
-        # Определяем цвет
-        if msg_type == "success" or "✅" in msg:
-            color = COLORS['success']
-        elif msg_type == "error" or "❌" in msg:
-            color = COLORS['danger']
-        elif msg_type == "profit":
-            color = COLORS['warning']
-        else:
-            color = COLORS['text_muted']
+        # Время всегда серым
+        time_color = COLORS['text_muted']
+        text_color = COLORS['text']
         
-        # Создаём лейбл
-        log_entry = QLabel(f"[{time_str}] {msg}")
-        log_entry.setStyleSheet(f"font-size: 11px; color: {color}; padding: 2px 0;")
+        # Если есть PnL — красим только сумму
+        if "PnL:" in msg:
+            import re
+            # Ищем PnL: $... или PnL: +$... или PnL: -$...
+            match = re.search(r'(PnL:\s*)([+\-]?\$[\d.,]+)', msg)
+            if match:
+                before_pnl = msg[:match.start()]
+                pnl_label = match.group(1)  # "PnL: "
+                pnl_value = match.group(2)  # "+$10.15" или "$-1.03"
+                after_pnl = msg[match.end():]
+                
+                # Определяем цвет PnL
+                if '-' in pnl_value or pnl_value.startswith('$-'):
+                    pnl_color = COLORS['danger']  # Красный для минуса
+                else:
+                    pnl_color = COLORS['success']  # Зелёный для плюса
+                
+                html = (f'<span style="color: {time_color};">[{time_str}]</span> '
+                       f'<span style="color: {text_color};">{before_pnl}{pnl_label}</span>'
+                       f'<span style="color: {pnl_color};">{pnl_value}</span>'
+                       f'<span style="color: {text_color};">{after_pnl}</span>')
+            else:
+                html = f'<span style="color: {time_color};">[{time_str}]</span> <span style="color: {text_color};">{msg}</span>'
+        elif "❌" in msg:
+            # Ошибки красным
+            html = f'<span style="color: {time_color};">[{time_str}]</span> <span style="color: {COLORS["danger"]};">{msg}</span>'
+        else:
+            # Обычные сообщения
+            html = f'<span style="color: {time_color};">[{time_str}]</span> <span style="color: {text_color};">{msg}</span>'
+        
+        log_entry = QLabel(html)
+        log_entry.setTextFormat(Qt.RichText)
+        log_entry.setStyleSheet(f"font-size: 11px; padding: 2px 0;")
         log_entry.setWordWrap(True)
         
         # Добавляем в начало (перед stretch)
@@ -1619,21 +1856,47 @@ class BybitTerminal(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Введи API Key и Secret")
             return
         
+        # Проверяем сеть
+        is_mainnet = self.network_combo.currentData() == "mainnet"
+        
+        # Предупреждение для mainnet
+        if is_mainnet:
+            reply = QMessageBox.warning(
+                self, 
+                "⚠️ ВНИМАНИЕ — РЕАЛЬНЫЕ ДЕНЬГИ!",
+                "Вы подключаетесь к MAINNET!\n\n"
+                "Все сделки будут с РЕАЛЬНЫМИ деньгами.\n"
+                "Убедитесь что понимаете риски.\n\n"
+                "Продолжить?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+        
         # Показываем что идёт подключение
+        network_name = "MAINNET" if is_mainnet else "Testnet"
+        
+        # Защита от повторного запуска
+        if hasattr(self, 'connect_worker') and self.connect_worker and self.connect_worker.isRunning():
+            self._log("⚠️ Подключение уже выполняется")
+            return
+        
         self.connect_btn.setText("⏳ Подключение...")
         self.connect_btn.setEnabled(False)
-        self.status_lbl.setText("🔄 Подключение...")
+        self.status_lbl.setText(f"🔄 Подключение к {network_name}...")
         
         # Запускаем воркер
-        self.connect_worker = ConnectWorker(api_key, api_secret)
-        self.connect_worker.success.connect(self._on_connect_success)
+        self.connect_worker = ConnectWorker(api_key, api_secret, is_mainnet)
+        self.connect_worker.success.connect(lambda ex: self._on_connect_success(ex, is_mainnet))
         self.connect_worker.error.connect(self._on_connect_error)
         self.connect_worker.log.connect(self._log)
         self.connect_worker.start()
         
-    def _on_connect_success(self, exchange):
+    def _on_connect_success(self, exchange, is_mainnet: bool = False):
         """Вызывается при успешном подключении"""
         self.exchange = exchange
+        self.is_mainnet = is_mainnet
         
         # Сохраняем ключи
         api_key = self.api_key.text().strip()
@@ -1641,20 +1904,34 @@ class BybitTerminal(QMainWindow):
         self.settings.setValue("api_key", api_key)
         self.settings.setValue("api_secret", api_secret)
         
-        self.status_lbl.setText("🟢 Подключено")
+        network_name = "MAINNET 🔴" if is_mainnet else "Testnet 🧪"
+        status_color = COLORS['danger'] if is_mainnet else COLORS['success']
+        
+        self.status_lbl.setText(f"🟢 {network_name}")
         self.status_lbl.setStyleSheet(f"""
-            font-size: 12px; color: {COLORS['success']};
+            font-size: 12px; color: {status_color};
             background: rgba(0, 217, 165, 0.15); padding: 6px 14px; border-radius: 8px;
         """)
         
-        self.connect_btn.setText("✓ Подключено")
+        self.connect_btn.setText(f"✓ {network_name}")
         self.connect_btn.setEnabled(False)
         
         self.order_panel.set_enabled(True)
         self.auto_panel.set_enabled(True)
+        self.strategy_panel.set_enabled(True)
+        self.grid_panel.set_enabled(True)
+        self.smart_ai_panel.set_enabled(True)
         self.refresh_btn.setEnabled(True)
         
-        self._log("✅ Успешно подключено к Bybit Testnet!")
+        # Передаём exchange в Smart AI Panel для авто-режима
+        from strategies.smart_ai_bot import SmartAIBot
+        smart_bot = SmartAIBot(exchange)
+        self.smart_ai_panel.set_bot(smart_bot, exchange)
+        self.smart_ai_panel.log_signal.connect(self._log)
+        
+        self._log(f"✅ Успешно подключено к Bybit {network_name}!")
+        if is_mainnet:
+            self._log("⚠️ ВНИМАНИЕ: Торговля с РЕАЛЬНЫМИ деньгами!")
         self._refresh_data()
         
         # Auto refresh каждые 5 сек
@@ -1662,11 +1939,12 @@ class BybitTerminal(QMainWindow):
         self.refresh_timer.timeout.connect(self._refresh_data)
         self.refresh_timer.start(5000)
         
-        # Автозапуск автоторговли если была включена
-        was_auto_trading = self.settings.value("auto_trading", "false")
-        if was_auto_trading == "true" or was_auto_trading == True:
-            self._log("🔄 Восстанавливаю автоторговлю...")
-            QTimer.singleShot(2000, self._start_auto_trade)  # Запускаем через 2 сек
+        # Автозапуск автоторговли если была включена (только для testnet)
+        if not is_mainnet:
+            was_auto_trading = self.settings.value("auto_trading", "false")
+            if was_auto_trading == "true" or was_auto_trading == True:
+                self._log("🔄 Восстанавливаю автоторговлю...")
+                QTimer.singleShot(2000, self._start_auto_trade)  # Запускаем через 2 сек
             
     def _start_auto_trade(self):
         """Запускает автоторговлю (без toggle)"""
@@ -1719,7 +1997,98 @@ class BybitTerminal(QMainWindow):
     def _on_data_ready(self, available: float, total: float, pnl: float, positions: list):
         """Вызывается когда данные готовы"""
         self.balance_widget.update_balance(available, total, pnl)
+        
+        # Отслеживаем закрытые позиции для журнала
+        self._check_closed_positions(positions)
+        
         self._update_positions(positions)
+    
+    def _check_closed_positions(self, new_positions: list):
+        """Проверяет какие позиции закрылись и записывает в журнал"""
+        if not hasattr(self, '_tracked_positions'):
+            self._tracked_positions = {}
+            
+        # Текущие символы
+        current_symbols = {p.get('symbol') for p in new_positions if float(p.get('contracts', 0)) > 0}
+        
+        # Проверяем какие позиции закрылись
+        closed = []
+        for symbol, pos_data in list(self._tracked_positions.items()):
+            if symbol not in current_symbols:
+                closed.append((symbol, pos_data))
+                del self._tracked_positions[symbol]
+        
+        # Записываем закрытые в журнал
+        for symbol, pos_data in closed:
+            try:
+                # Получаем текущую цену как цену выхода
+                ticker = self.exchange.fetch_ticker(symbol)
+                exit_price = ticker['last']
+                
+                entry_price = pos_data['entry_price']
+                side = pos_data['side']
+                size = pos_data['size']
+                leverage = pos_data['leverage']
+                strategy = pos_data.get('strategy', 'Unknown')
+                
+                # Рассчитываем PnL
+                if side == "long":
+                    pnl_usd = (exit_price - entry_price) * size
+                else:
+                    pnl_usd = (entry_price - exit_price) * size
+                
+                # Определяем причину закрытия
+                if side == "long":
+                    if exit_price <= pos_data.get('sl_price', 0):
+                        close_reason = "SL"
+                    elif exit_price >= pos_data.get('tp_price', float('inf')):
+                        close_reason = "TP"
+                    else:
+                        close_reason = "Unknown"
+                else:
+                    if exit_price >= pos_data.get('sl_price', float('inf')):
+                        close_reason = "SL"
+                    elif exit_price <= pos_data.get('tp_price', 0):
+                        close_reason = "TP"
+                    else:
+                        close_reason = "Unknown"
+                
+                coin = symbol.split('/')[0]
+                pnl_str = f"{'+'if pnl_usd>=0 else ''}${pnl_usd:.2f}"
+                self._log(f"📝 {coin} закрыто по {close_reason} | PnL: {pnl_str}")
+                
+                self._add_to_journal(
+                    symbol=symbol,
+                    side=side,
+                    strategy=strategy,
+                    entry_price=entry_price,
+                    exit_price=exit_price,
+                    size=size,
+                    leverage=leverage,
+                    pnl_usd=pnl_usd,
+                    close_reason=close_reason,
+                    sl_price=pos_data.get('sl_price', 0),
+                    tp_price=pos_data.get('tp_price', 0),
+                    timestamp_open=pos_data.get('timestamp_open')
+                )
+            except Exception as e:
+                self._log(f"⚠️ Ошибка записи в журнал: {e}")
+        
+        # Обновляем отслеживаемые позиции
+        for pos in new_positions:
+            symbol = pos.get('symbol')
+            if symbol and float(pos.get('contracts', 0)) > 0:
+                if symbol not in self._tracked_positions:
+                    self._tracked_positions[symbol] = {
+                        'entry_price': float(pos.get('entryPrice', 0)),
+                        'side': (pos.get('side') or '').lower(),
+                        'size': float(pos.get('contracts', 0)),
+                        'leverage': int(pos.get('leverage', 1)),
+                        'strategy': pos.get('info', {}).get('strategy', 'Manual'),
+                        'sl_price': float(pos.get('stopLoss', 0) or 0),
+                        'tp_price': float(pos.get('takeProfit', 0) or 0),
+                        'timestamp_open': datetime.now().isoformat()
+                    }
         
     def _on_price_ready(self, price: float):
         """Вызывается когда цена готова"""
@@ -1766,9 +2135,13 @@ class BybitTerminal(QMainWindow):
                 
     def _submit_order(self, symbol: str, side: str, position_usdt: float, sl_pct: float, tp_pct: float, leverage: int):
         """
-        Создаёт ордер.
+        Создаёт ордер с SL/TP на бирже.
         position_usdt - размер позиции в USDT (НЕ маржа!)
         Маржа = position_usdt / leverage
+        
+        Комбинированная защита:
+        1. SL/TP ордера на бирже — жёсткий стоп и тейк
+        2. Автозакрытие по сигналу — если индикаторы развернулись (в AutoTradeWorker)
         """
         if not self.exchange:
             return
@@ -1810,14 +2183,35 @@ class BybitTerminal(QMainWindow):
             if side == "buy":
                 sl_price = price * (1 - sl_pct / 100)
                 tp_price = price * (1 + tp_pct / 100)
-                order = self.exchange.create_market_buy_order(symbol, qty)
             else:
                 sl_price = price * (1 + sl_pct / 100)
                 tp_price = price * (1 - tp_pct / 100)
-                order = self.exchange.create_market_sell_order(symbol, qty)
             
-            self._log(f"   SL: ${sl_price:,.2f} ({sl_pct}%) | TP: ${tp_price:,.2f} ({tp_pct}%)")
-            self._log(f"✅ Ордер исполнен!")
+            # Округляем цены SL/TP
+            sl_price = round(sl_price, 2)
+            tp_price = round(tp_price, 2)
+            
+            self._log(f"   🛡️ SL: ${sl_price:,.2f} ({sl_pct}%)")
+            self._log(f"   🎯 TP: ${tp_price:,.2f} ({tp_pct}%)")
+            
+            # Создаём маркет ордер с SL/TP на бирже
+            params = {
+                'stopLoss': {
+                    'type': 'market',
+                    'triggerPrice': sl_price,
+                },
+                'takeProfit': {
+                    'type': 'market', 
+                    'triggerPrice': tp_price,
+                }
+            }
+            
+            if side == "buy":
+                order = self.exchange.create_market_buy_order(symbol, qty, params)
+            else:
+                order = self.exchange.create_market_sell_order(symbol, qty, params)
+            
+            self._log(f"✅ Ордер исполнен! SL/TP выставлены на бирже")
             
             # Add to history
             self.history_table.add_trade(
@@ -1832,8 +2226,34 @@ class BybitTerminal(QMainWindow):
             self._refresh_data()
             
         except Exception as e:
-            self._log(f"❌ Ошибка: {e}")
-            QMessageBox.critical(self, "Ошибка ордера", str(e))
+            # Если не удалось с SL/TP, пробуем без них
+            error_str = str(e).lower()
+            if "stoploss" in error_str or "takeprofit" in error_str or "sl" in error_str or "tp" in error_str:
+                self._log(f"⚠️ SL/TP не поддерживается, открываю без них...")
+                try:
+                    if side == "buy":
+                        order = self.exchange.create_market_buy_order(symbol, qty)
+                    else:
+                        order = self.exchange.create_market_sell_order(symbol, qty)
+                    self._log(f"✅ Ордер исполнен (без SL/TP на бирже)")
+                    self._log(f"⚠️ Используйте автозакрытие по сигналу!")
+                    
+                    self.history_table.add_trade(
+                        datetime.now().strftime("%H:%M:%S"),
+                        coin,
+                        side,
+                        qty,
+                        price,
+                        0
+                    )
+                    self._refresh_data()
+                    return
+                except Exception as e2:
+                    self._log(f"❌ Ошибка: {e2}")
+                    QMessageBox.critical(self, "Ошибка ордера", str(e2))
+            else:
+                self._log(f"❌ Ошибка: {e}")
+                QMessageBox.critical(self, "Ошибка ордера", str(e))
             
     def _close_position(self, symbol: str):
         if not self.exchange:
@@ -1844,6 +2264,8 @@ class BybitTerminal(QMainWindow):
                 side = (pos.get('side') or '').lower()
                 size = float(pos.get('contracts') or 0)
                 pnl = float(pos.get('unrealizedPnl') or 0)
+                entry_price = float(pos.get('entryPrice') or 0)
+                leverage = int(pos.get('leverage') or 1)
                 
                 try:
                     if side == "long":
@@ -1853,7 +2275,8 @@ class BybitTerminal(QMainWindow):
                     
                     coin = symbol.split('/')[0]
                     pnl_str = f"{'+'if pnl>=0 else ''}${pnl:.2f}"
-                    self._log(f"✅ Закрыто {coin} | PnL: {pnl_str}", "success" if pnl >= 0 else "error")
+                    # Красный только при минусе
+                    self._log(f"✅ Закрыто {coin} | PnL: {pnl_str}", "error" if pnl < 0 else "info")
                     
                     # Показываем бейдж если хороший профит
                     if pnl >= 5:
@@ -1861,13 +2284,28 @@ class BybitTerminal(QMainWindow):
                     
                     # Add to history
                     ticker = self.exchange.fetch_ticker(symbol)
+                    exit_price = ticker['last']
+                    
                     self.history_table.add_trade(
                         datetime.now().strftime("%H:%M:%S"),
                         coin,
                         "sell" if side == "long" else "buy",
                         size,
-                        ticker['last'],
+                        exit_price,
                         pnl
+                    )
+                    
+                    # === ЗАПИСЬ В ЖУРНАЛ ===
+                    self._add_to_journal(
+                        symbol=symbol,
+                        side=side,
+                        strategy="Manual",
+                        entry_price=entry_price,
+                        exit_price=exit_price,
+                        size=size,
+                        leverage=leverage,
+                        pnl_usd=pnl,
+                        close_reason="Manual"
                     )
                     
                     self._refresh_data()
@@ -1875,6 +2313,49 @@ class BybitTerminal(QMainWindow):
                 except Exception as e:
                     self._log(f"❌ Ошибка: {e}", "error")
                 break
+    
+    def _add_to_journal(self, symbol: str, side: str, strategy: str, 
+                        entry_price: float, exit_price: float, size: float,
+                        leverage: int, pnl_usd: float, close_reason: str,
+                        sl_price: float = 0, tp_price: float = 0,
+                        timestamp_open: str = None, notes: str = ""):
+        """Добавляет сделку в журнал"""
+        from ui.trade_journal import Trade, get_journal
+        import uuid
+        
+        # Рассчитываем PnL %
+        if entry_price > 0 and size > 0:
+            margin = (size * entry_price) / leverage
+            pnl_pct = (pnl_usd / margin) * 100 if margin > 0 else 0
+        else:
+            pnl_pct = 0
+        
+        trade = Trade(
+            id=str(uuid.uuid4())[:8],
+            timestamp_open=timestamp_open or datetime.now().isoformat(),
+            timestamp_close=datetime.now().isoformat(),
+            symbol=symbol,
+            side=side,
+            strategy=strategy,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            size=size,
+            leverage=leverage,
+            pnl_usd=pnl_usd,
+            pnl_pct=pnl_pct,
+            fees=0,  # TODO: получить комиссии
+            sl_price=sl_price,
+            tp_price=tp_price,
+            close_reason=close_reason,
+            notes=notes
+        )
+        
+        journal = get_journal()
+        journal.add_trade(trade)
+        
+        # Обновляем виджет журнала
+        if hasattr(self, 'journal_widget'):
+            self.journal_widget._refresh()
                 
     def _toggle_auto_trade(self):
         self.auto_trading = not self.auto_trading
@@ -1884,12 +2365,25 @@ class BybitTerminal(QMainWindow):
         self._save_auto_settings()
         
         if self.auto_trading:
-            self._log("🤖 Автоторговля запущена - торгую на 5-10% от баланса")
-            # Запускаем таймер проверки сигналов каждые 60 сек
+            # Интервал проверки зависит от таймфрейма
+            tf = self.auto_panel.tf_combo.currentData() or "1h"
+            interval_map = {
+                "1m": 60000,      # 1 минута
+                "5m": 300000,     # 5 минут
+                "15m": 900000,    # 15 минут
+                "1h": 1800000,    # 30 минут (проверяем 2 раза за свечу)
+                "4h": 3600000,    # 1 час
+                "1d": 14400000,   # 4 часа
+            }
+            interval = interval_map.get(tf, 1800000)
+            interval_min = interval // 60000
+            
+            self._log(f"🤖 Автоторговля запущена | ТФ: {tf} | Проверка каждые {interval_min} мин")
+            
             if not hasattr(self, 'auto_timer'):
                 self.auto_timer = QTimer()
                 self.auto_timer.timeout.connect(self._run_auto_worker)
-            self.auto_timer.start(60000)  # Каждую минуту
+            self.auto_timer.start(interval)
             # Сразу проверяем
             QTimer.singleShot(1000, self._run_auto_worker)
         else:
@@ -1959,7 +2453,12 @@ class BybitTerminal(QMainWindow):
         self.auto_worker.profit_signal.connect(self._show_profit)
         self.auto_worker.refresh_signal.connect(self._refresh_data)
         self.auto_worker.open_position_signal.connect(self._auto_open_position)
+        self.auto_worker.journal_signal.connect(self._on_journal_entry)
         self.auto_worker.start()
+    
+    def _on_journal_entry(self, data: dict):
+        """Обработка записи в журнал из воркера"""
+        self._add_to_journal(**data)
                 
     def _get_htf_trend(self, coin: str, tf: str) -> str:
         """Получает тренд на старшем таймфрейме для фильтрации"""
@@ -2068,7 +2567,13 @@ class BybitTerminal(QMainWindow):
         return ema
         
     def _auto_open_position(self, symbol: str, side: str, size: float, sl_pct: float, tp_pct: float, leverage: int):
-        """Открывает позицию автоматически"""
+        """
+        Открывает позицию автоматически с SL/TP на бирже.
+        
+        Комбинированная защита:
+        1. SL/TP ордера на бирже — жёсткий стоп и тейк
+        2. Автозакрытие по сигналу — если индикаторы развернулись (в AutoTradeWorker)
+        """
         try:
             # Устанавливаем плечо
             self._set_leverage_safe(leverage, symbol)
@@ -2077,14 +2582,57 @@ class BybitTerminal(QMainWindow):
             ticker = self.exchange.fetch_ticker(symbol)
             price = ticker['last']
             
-            # Открываем ордер
+            # Рассчитываем SL/TP цены
             if side == "buy":
-                order = self.exchange.create_market_buy_order(symbol, size)
+                sl_price = price * (1 - sl_pct / 100)
+                tp_price = price * (1 + tp_pct / 100)
             else:
-                order = self.exchange.create_market_sell_order(symbol, size)
+                sl_price = price * (1 + sl_pct / 100)
+                tp_price = price * (1 - tp_pct / 100)
+            
+            # Округляем цены
+            sl_price = round(sl_price, 2)
+            tp_price = round(tp_price, 2)
+            
+            # Параметры SL/TP для Bybit
+            params = {
+                'stopLoss': {
+                    'type': 'market',
+                    'triggerPrice': sl_price,
+                },
+                'takeProfit': {
+                    'type': 'market',
+                    'triggerPrice': tp_price,
+                }
+            }
+            
+            # Открываем ордер с SL/TP
+            try:
+                if side == "buy":
+                    order = self.exchange.create_market_buy_order(symbol, size, params)
+                else:
+                    order = self.exchange.create_market_sell_order(symbol, size, params)
+                sl_tp_set = True
+            except Exception as e:
+                # Если SL/TP не поддерживается, открываем без них
+                error_str = str(e).lower()
+                if "stoploss" in error_str or "takeprofit" in error_str or "sl" in error_str or "tp" in error_str:
+                    if side == "buy":
+                        order = self.exchange.create_market_buy_order(symbol, size)
+                    else:
+                        order = self.exchange.create_market_sell_order(symbol, size)
+                    sl_tp_set = False
+                else:
+                    raise e
                 
             coin = symbol.split('/')[0]
-            self._log(f"✅ АВТО {'ЛОНГ' if side == 'buy' else 'ШОРТ'} {size} {coin} @ ${price:,.2f}")
+            
+            if sl_tp_set:
+                self._log(f"✅ АВТО {'ЛОНГ' if side == 'buy' else 'ШОРТ'} {size} {coin} @ ${price:,.2f}")
+                self._log(f"   🛡️ SL: ${sl_price:,.2f} | 🎯 TP: ${tp_price:,.2f}")
+            else:
+                self._log(f"✅ АВТО {'ЛОНГ' if side == 'buy' else 'ШОРТ'} {size} {coin} @ ${price:,.2f}")
+                self._log(f"   ⚠️ SL/TP не выставлены — используется автозакрытие по сигналу")
             
             # Добавляем в историю
             self.history_table.add_trade(
@@ -2100,3 +2648,443 @@ class BybitTerminal(QMainWindow):
             
         except Exception as e:
             self._log(f"❌ Ошибка авто-ордера: {e}")
+
+    # ==================== МУЛЬТИ-СТРАТЕГИИ ====================
+    
+    def _load_strategies(self):
+        """Загружает список стратегий в панель"""
+        try:
+            from strategies.manager import get_all_strategies
+            strategies = get_all_strategies()
+            self.strategy_panel.load_strategies(strategies)
+        except Exception as e:
+            self._log(f"⚠️ Ошибка загрузки стратегий: {e}")
+            
+    def _start_multi_strategies(self):
+        """Запускает выбранные стратегии"""
+        if not self.exchange:
+            self._log("❌ Сначала подключитесь к API")
+            return
+            
+        selected = self.strategy_panel.get_selected_strategies()
+        if not selected:
+            self._log("⚠️ Выберите хотя бы одну стратегию")
+            return
+            
+        coins = self.strategy_panel.get_selected_coins()
+        if not coins:
+            self._log("⚠️ Выберите хотя бы одну монету")
+            return
+            
+        risk_pct = self.strategy_panel.get_risk_pct()
+        leverage = self.strategy_panel.get_leverage()
+        
+        # Создаём менеджер если нет
+        if not hasattr(self, 'strategy_manager'):
+            from strategies.manager import MultiStrategyManager
+            self.strategy_manager = MultiStrategyManager(self.exchange)
+            
+        # Запускаем таймеры для каждой стратегии
+        if not hasattr(self, 'strategy_timers'):
+            self.strategy_timers = {}
+            
+        from strategies.manager import STRATEGIES
+        
+        for strategy_id in selected:
+            # Получаем таймфрейм стратегии
+            strategy_cls = STRATEGIES.get(strategy_id)
+            if not strategy_cls:
+                continue
+                
+            instance = strategy_cls(self.exchange)
+            tf = instance.config.timeframe
+            
+            # Интервал проверки
+            interval_map = {
+                "15m": 300000,    # 5 минут
+                "1h": 1800000,    # 30 минут
+                "4h": 3600000,    # 1 час
+                "1d": 14400000,   # 4 часа
+            }
+            interval = interval_map.get(tf, 1800000)
+            
+            # Создаём таймер
+            timer = QTimer()
+            timer.timeout.connect(lambda sid=strategy_id: self._run_strategy_check(sid))
+            timer.start(interval)
+            self.strategy_timers[strategy_id] = timer
+            
+            # Сохраняем настройки
+            self.strategy_manager.active_strategies[strategy_id] = {
+                "coins": coins,
+                "risk_pct": risk_pct,
+                "leverage": leverage,
+                "timeframe": tf
+            }
+            
+            self._log(f"🎯 Запущена стратегия: {instance.config.name}")
+            
+        # Сразу проверяем
+        for strategy_id in selected:
+            QTimer.singleShot(1000, lambda sid=strategy_id: self._run_strategy_check(sid))
+            
+        self.strategy_panel.set_running(True)
+        self._log(f"🚀 Запущено {len(selected)} стратегий | Риск: {risk_pct}% | Плечо: {leverage}x")
+        
+    def _stop_multi_strategies(self):
+        """Останавливает все стратегии"""
+        if hasattr(self, 'strategy_timers'):
+            for timer in self.strategy_timers.values():
+                timer.stop()
+            self.strategy_timers.clear()
+        
+        # Останавливаем воркеры
+        if hasattr(self, 'strategy_workers'):
+            for worker in self.strategy_workers.values():
+                if worker.isRunning():
+                    worker.stop()
+                    worker.wait(1000)
+            self.strategy_workers.clear()
+            
+        if hasattr(self, 'strategy_manager'):
+            self.strategy_manager.active_strategies.clear()
+            
+        self.strategy_panel.set_running(False)
+        self._log("⏹ Все стратегии остановлены")
+        
+    def _run_strategy_check(self, strategy_id: str):
+        """Запускает проверку для одной стратегии"""
+        if not hasattr(self, 'strategy_manager'):
+            return
+            
+        if strategy_id not in self.strategy_manager.active_strategies:
+            return
+        
+        # Храним воркеры чтобы они не удалялись
+        if not hasattr(self, 'strategy_workers'):
+            self.strategy_workers = {}
+            
+        # Если предыдущий воркер ещё работает — пропускаем
+        if strategy_id in self.strategy_workers:
+            old_worker = self.strategy_workers[strategy_id]
+            if old_worker.isRunning():
+                return
+            
+        config = self.strategy_manager.active_strategies[strategy_id]
+        
+        # Создаём воркер
+        from strategies.manager import StrategyWorker
+        
+        worker = StrategyWorker(
+            self.exchange,
+            strategy_id,
+            config['coins'],
+            config['risk_pct'],
+            config['leverage']
+        )
+        worker.log_signal.connect(self._on_strategy_log)
+        worker.trade_signal.connect(self._on_strategy_trade)
+        worker.close_signal.connect(self._on_strategy_close)
+        
+        # Сохраняем ссылку
+        self.strategy_workers[strategy_id] = worker
+        worker.start()
+        
+    def _on_strategy_log(self, message: str, strategy_id: str):
+        """Обработка лога от стратегии"""
+        self._log(f"[{strategy_id}] {message}")
+        
+    def _on_strategy_trade(self, strategy_id: str, symbol: str, side: str, 
+                           size: float, sl_price: float, tp_price: float, 
+                           leverage: int, reason: str):
+        """Обработка сигнала на открытие от стратегии"""
+        try:
+            coin = symbol.split('/')[0]
+            
+            # Устанавливаем плечо
+            self._set_leverage_safe(leverage, symbol)
+            
+            # Получаем цену
+            ticker = self.exchange.fetch_ticker(symbol)
+            price = ticker['last']
+            
+            # Параметры SL/TP
+            params = {
+                'stopLoss': {'type': 'market', 'triggerPrice': round(sl_price, 2)},
+                'takeProfit': {'type': 'market', 'triggerPrice': round(tp_price, 2)}
+            }
+            
+            # Открываем
+            try:
+                if side == "buy":
+                    self.exchange.create_market_buy_order(symbol, size, params)
+                else:
+                    self.exchange.create_market_sell_order(symbol, size, params)
+                sl_tp_ok = True
+            except:
+                if side == "buy":
+                    self.exchange.create_market_buy_order(symbol, size)
+                else:
+                    self.exchange.create_market_sell_order(symbol, size)
+                sl_tp_ok = False
+                
+            direction = "ЛОНГ 📈" if side == "buy" else "ШОРТ 📉"
+            self._log(f"🎯 [{strategy_id}] {direction} {coin} @ ${price:,.2f}")
+            self._log(f"   {reason}")
+            if sl_tp_ok:
+                self._log(f"   🛡️ SL: ${sl_price:,.2f} | 🎯 TP: ${tp_price:,.2f}")
+            else:
+                self._log(f"   ⚠️ SL/TP не выставлены — закроется только вручную")
+                
+            self._refresh_data()
+            
+        except Exception as e:
+            self._log(f"❌ [{strategy_id}] Ошибка: {e}")
+            
+    def _on_strategy_close(self, strategy_id: str, symbol: str, reason: str):
+        """Обработка сигнала на закрытие от стратегии — ОТКЛЮЧЕНО"""
+        # Стратегии НЕ закрывают позиции автоматически
+        # Закрытие происходит только через SL/TP на бирже
+        # Это предотвращает конфликты между стратегиями
+        pass
+
+    # ==================== GRID BOT ====================
+    
+    def _start_grid_bot(self, config: dict):
+        """Запускает Grid бота"""
+        if not self.exchange:
+            self._log("❌ Сначала подключитесь к API")
+            return
+            
+        try:
+            from strategies.grid_bot import GridBot, GridConfig, GridMode
+            
+            # Создаём конфиг
+            grid_config = GridConfig(
+                symbol=config['symbol'],
+                mode=GridMode.AI if config['mode'] == 'ai' else GridMode.MANUAL,
+                upper_price=config['upper_price'],
+                lower_price=config['lower_price'],
+                grid_count=config['grid_count'],
+                total_investment=config['investment'],
+                leverage=config['leverage'],
+            )
+            
+            # Создаём бота
+            self.grid_bot = GridBot(self.exchange, grid_config)
+            
+            # Настраиваем сетку
+            self._log(f"📊 Настройка Grid бота для {config['symbol']}...")
+            
+            if config['mode'] == 'ai':
+                self._log("🤖 AI анализирует волатильность...")
+                
+            levels = self.grid_bot.setup_grid()
+            self._log(f"📊 Создано {len(levels)} уровней сетки")
+            
+            if levels:
+                self._log(f"   Диапазон: ${levels[0].price:,.2f} — ${levels[-1].price:,.2f}")
+            
+            # Размещаем ордера
+            self._log("📝 Размещаю ордера...")
+            orders = self.grid_bot.place_grid_orders()
+            self._log(f"✅ Размещено {len(orders)} ордеров")
+            
+            # Запускаем таймер проверки
+            self.grid_timer = QTimer()
+            self.grid_timer.timeout.connect(self._check_grid_orders)
+            self.grid_timer.start(10000)  # Каждые 10 сек
+            
+            self.grid_panel.set_running(True)
+            self.grid_panel.update_stats(0, 0, len(orders), len(levels))
+            
+            self._log("🚀 Grid бот запущен!")
+            
+        except Exception as e:
+            self._log(f"❌ Ошибка запуска Grid: {e}")
+            
+    def _stop_grid_bot(self):
+        """Останавливает Grid бота"""
+        if hasattr(self, 'grid_timer'):
+            self.grid_timer.stop()
+            
+        if hasattr(self, 'grid_bot'):
+            self._log("⏹ Отменяю ордера Grid...")
+            self.grid_bot.cancel_all_orders()
+            
+            stats = self.grid_bot.get_stats()
+            self._log(f"📊 Grid остановлен | Профит: ${stats['total_profit']:.2f} | Сделок: {stats['trades_count']}")
+            
+        self.grid_panel.set_running(False)
+        self._log("⏹ Grid бот остановлен")
+        
+    def _check_grid_orders(self):
+        """Проверяет и обновляет ордера Grid"""
+        if not hasattr(self, 'grid_bot') or not self.grid_bot.is_running:
+            return
+            
+        try:
+            new_orders = self.grid_bot.check_and_replace_orders()
+            
+            if new_orders:
+                self._log(f"🔄 Grid: {len(new_orders)} ордеров переставлено")
+                
+            # Обновляем статистику
+            stats = self.grid_bot.get_stats()
+            self.grid_panel.update_stats(
+                stats['total_profit'],
+                stats['trades_count'],
+                stats['active_orders'],
+                stats['grid_levels']
+            )
+            
+        except Exception as e:
+            self._log(f"⚠️ Grid ошибка: {e}")
+
+    # ==================== SMART AI BOT ====================
+    
+    def _analyze_smart_ai(self, symbol: str):
+        """Запускает анализ Smart AI"""
+        if not self.exchange:
+            self._log("❌ Сначала подключитесь к API")
+            self.smart_ai_panel.analyze_btn.setText("🔍 Анализировать рынок")
+            self.smart_ai_panel.analyze_btn.setEnabled(True)
+            return
+        
+        # Защита от повторного запуска
+        if hasattr(self, 'ai_worker') and self.ai_worker and self.ai_worker.isRunning():
+            self._log("⚠️ Анализ уже запущен")
+            return
+            
+        self._log(f"🧠 Smart AI анализирует {symbol}...")
+        
+        # Запускаем в отдельном потоке
+        from PySide6.QtCore import QThread, Signal as QtSignal
+        
+        class AnalyzeWorker(QThread):
+            result = QtSignal(object)
+            
+            def __init__(self, exchange, symbol):
+                super().__init__()
+                self.exchange = exchange
+                self.symbol = symbol
+                
+            def run(self):
+                try:
+                    from strategies.smart_ai_bot import SmartAIBot
+                    bot = SmartAIBot(self.exchange)
+                    signal = bot.get_signal(self.symbol)
+                    self.result.emit(signal)
+                except Exception as e:
+                    print(f"Smart AI error: {e}")
+                    self.result.emit(None)
+        
+        self.ai_worker = AnalyzeWorker(self.exchange, symbol)
+        self.ai_worker.result.connect(self._on_smart_ai_result)
+        self.ai_worker.start()
+        
+    def _on_smart_ai_result(self, signal):
+        """Обработка результата анализа"""
+        self.smart_ai_panel.update_analysis(signal)
+        
+        if signal and signal.action != "wait":
+            analysis = signal.analysis
+            self._log(f"🧠 AI: {signal.action.upper()} | Confidence: {signal.confidence}%")
+            self._log(f"   MTF: HTF={analysis.htf_trend} MTF={analysis.mtf_trend} LTF={analysis.ltf_trend}")
+            self._log(f"   Bull: {analysis.bull_score} | Bear: {analysis.bear_score}")
+            self._log(f"   Entry: ${signal.entry_price:,.2f} | SL: ${signal.stop_loss:,.2f}")
+        else:
+            self._log("🧠 AI: Ожидание лучшего момента")
+            
+    def _trade_smart_ai(self, config: dict):
+        """Открывает сделку по сигналу Smart AI"""
+        if not self.exchange:
+            return
+            
+        signal = config['signal']
+        symbol = config['symbol']
+        side = config['side']
+        leverage = config['leverage']
+        
+        try:
+            # Устанавливаем плечо
+            self._set_leverage_safe(leverage, symbol)
+            
+            # Получаем баланс
+            balance = self.exchange.fetch_balance()
+            available = float(balance.get('USDT', {}).get('free') or 0)
+            
+            # Размер позиции
+            position_usdt = available * (signal.position_size_pct / 100)
+            ticker = self.exchange.fetch_ticker(symbol)
+            price = ticker['last']
+            
+            size = position_usdt / price
+            coin = symbol.split('/')[0]
+            if coin == "BTC":
+                size = round(size, 3)
+            elif coin in ["ETH", "SOL"]:
+                size = round(size, 2)
+            else:
+                size = round(size, 1)
+            
+            # SL/TP
+            params = {
+                'stopLoss': {'type': 'market', 'triggerPrice': round(signal.stop_loss, 2)},
+                'takeProfit': {'type': 'market', 'triggerPrice': round(signal.take_profit_2, 2)}  # TP2 как основной
+            }
+            
+            # Открываем
+            if side == "buy":
+                self.exchange.create_market_buy_order(symbol, size, params)
+            else:
+                self.exchange.create_market_sell_order(symbol, size, params)
+                
+            direction = "ЛОНГ 📈" if side == "buy" else "ШОРТ 📉"
+            self._log(f"🧠 Smart AI {direction} {coin} @ ${price:,.2f}")
+            self._log(f"   Confidence: {signal.confidence}% | Size: {size}")
+            self._log(f"   🛡️ SL: ${signal.stop_loss:,.2f} | 🎯 TP: ${signal.take_profit_2:,.2f}")
+            
+            self._refresh_data()
+            
+        except Exception as e:
+            self._log(f"❌ Smart AI ошибка: {e}")
+    
+    def closeEvent(self, event):
+        """Корректно останавливаем все воркеры при закрытии"""
+        # Останавливаем автоторговлю
+        if hasattr(self, 'auto_timer') and self.auto_timer:
+            self.auto_timer.stop()
+        
+        if hasattr(self, 'auto_worker') and self.auto_worker and self.auto_worker.isRunning():
+            self.auto_worker.stop()
+            self.auto_worker.wait(1000)
+        
+        # Останавливаем воркеры Smart AI панели
+        if hasattr(self, 'smart_ai_panel') and self.smart_ai_panel:
+            self.smart_ai_panel.stop_all_workers()
+        
+        # Останавливаем воркеры стратегий
+        if hasattr(self, 'strategy_workers'):
+            for worker in self.strategy_workers.values():
+                if worker.isRunning():
+                    worker.stop()
+                    worker.wait(500)
+        
+        # Останавливаем менеджер стратегий
+        if hasattr(self, 'strategy_manager'):
+            self.strategy_manager.stop_all()
+        
+        # Останавливаем AI воркер
+        if hasattr(self, 'ai_worker') and self.ai_worker and self.ai_worker.isRunning():
+            self.ai_worker.wait(500)
+        
+        # Останавливаем refresh воркер
+        if hasattr(self, 'refresh_worker') and self.refresh_worker and self.refresh_worker.isRunning():
+            self.refresh_worker.wait(500)
+        
+        # Останавливаем connect воркер
+        if hasattr(self, 'connect_worker') and self.connect_worker and self.connect_worker.isRunning():
+            self.connect_worker.wait(500)
+        
+        event.accept()

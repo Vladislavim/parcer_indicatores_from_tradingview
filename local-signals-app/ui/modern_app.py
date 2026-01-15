@@ -1387,18 +1387,121 @@ def run():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     
+    # Не закрывать при закрытии последнего окна (для работы в трее)
+    app.setQuitOnLastWindowClosed(False)
+    
+    # Настройки для запоминания последнего окна
+    settings = QSettings("LocalSignals", "Pro")
+    
     # Иконка приложения (для панели задач)
     import os
-    from PySide6.QtGui import QIcon
+    from PySide6.QtGui import QIcon, QAction
+    from PySide6.QtWidgets import QSystemTrayIcon, QMenu
+    
     icon_path = os.path.join(os.path.dirname(__file__), "..", "content", "icon.ico")
-    if os.path.exists(icon_path):
-        app.setWindowIcon(QIcon(icon_path))
+    app_icon = QIcon(icon_path) if os.path.exists(icon_path) else QIcon()
+    app.setWindowIcon(app_icon)
     
     # Шрифт
     font = QFont("Segoe UI", 10)
     app.setFont(font)
     
     window = MainWindow()
+    
+    # Переменная для хранения последнего активного окна
+    last_active_window = {"window": "main"}  # "main" или "terminal"
+    
+    # Отслеживаем активацию окон
+    def on_window_activated(w):
+        if w == window:
+            last_active_window["window"] = "main"
+            settings.setValue("last_window", "main")
+        elif hasattr(window, 'terminal') and w == window.terminal:
+            last_active_window["window"] = "terminal"
+            settings.setValue("last_window", "terminal")
+    
+    app.focusWindowChanged.connect(on_window_activated)
+    
+    # Системный трей
+    tray = QSystemTrayIcon(app_icon, app)
+    tray.setToolTip("Local Signals Pro")
+    
+    # Функция для показа последнего активного окна
+    def show_last_window():
+        last = settings.value("last_window", "main")
+        if last == "terminal" and hasattr(window, 'terminal') and window.terminal:
+            window.terminal.show()
+            window.terminal.raise_()
+            window.terminal.activateWindow()
+        else:
+            window.show()
+            window.raise_()
+            window.activateWindow()
+    
+    # Меню трея
+    tray_menu = QMenu()
+    
+    show_action = QAction("📊 Открыть", tray_menu)
+    show_action.triggered.connect(show_last_window)
+    tray_menu.addAction(show_action)
+    
+    # Отдельные пункты для окон
+    tray_menu.addSeparator()
+    
+    main_action = QAction("🏠 Главное окно", tray_menu)
+    main_action.triggered.connect(lambda: (window.show(), window.raise_(), window.activateWindow()))
+    tray_menu.addAction(main_action)
+    
+    terminal_action = QAction("💹 Терминал", tray_menu)
+    def show_terminal():
+        if hasattr(window, 'terminal') and window.terminal:
+            window.terminal.show()
+            window.terminal.raise_()
+            window.terminal.activateWindow()
+        else:
+            window._open_terminal()
+    terminal_action.triggered.connect(show_terminal)
+    tray_menu.addAction(terminal_action)
+    
+    tray_menu.addSeparator()
+    
+    # Статус
+    status_action = QAction("⚪ Не подключено", tray_menu)
+    status_action.setEnabled(False)
+    tray_menu.addAction(status_action)
+    
+    tray_menu.addSeparator()
+    
+    quit_action = QAction("❌ Выход", tray_menu)
+    quit_action.triggered.connect(app.quit)
+    tray_menu.addAction(quit_action)
+    
+    tray.setContextMenu(tray_menu)
+    tray.show()
+    
+    # Двойной клик по трею — открыть последнее окно
+    def on_tray_activated(reason):
+        if reason == QSystemTrayIcon.DoubleClick:
+            show_last_window()
+    tray.activated.connect(on_tray_activated)
+    
+    # Переопределяем закрытие окна — сворачиваем в трей
+    original_close = window.closeEvent
+    def close_to_tray(event):
+        if tray.isVisible():
+            window.hide()
+            # НЕ скрываем терминал — он работает независимо
+            tray.showMessage(
+                "Local Signals Pro",
+                "Приложение работает в фоне. Кликните на иконку в трее.",
+                QSystemTrayIcon.Information,
+                2000
+            )
+            event.ignore()
+        else:
+            original_close(event)
+    window.closeEvent = close_to_tray
+    
     window.show()
     
     sys.exit(app.exec())
