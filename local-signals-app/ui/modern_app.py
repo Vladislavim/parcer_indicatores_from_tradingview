@@ -119,30 +119,48 @@ class CoinIconLoader:
 
 
 class CoinCheckBox(QWidget):
-    """Чекбокс с иконкой монеты - иконка слева"""
+    """Чекбокс с иконкой монеты и ценой"""
     
     def __init__(self, symbol: str, parent=None):
         super().__init__(parent)
         self.symbol = symbol
-        self.coin = symbol.replace("USDT.P", "")
+        self.coin = symbol.replace("USDT.P", "").replace("USDT", "")
+        self.current_price = 0.0
+        self.price_change_24h = 0.0
         
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        # Основной layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(8, 6, 8, 6)
+        main_layout.setSpacing(4)
         
-        # Иконка СЛЕВА
+        # Верхняя строка: иконка + чекбокс + название
+        top_layout = QHBoxLayout()
+        top_layout.setSpacing(6)
+        
+        # Иконка
         self.icon_lbl = QLabel()
-        self.icon_lbl.setFixedSize(28, 28)
+        self.icon_lbl.setFixedSize(24, 24)
         self.icon_lbl.setStyleSheet("background: transparent; border: none;")
-        layout.addWidget(self.icon_lbl)
+        top_layout.addWidget(self.icon_lbl)
         
-        # Чекбокс справа от иконки
+        # Название монеты
+        self.name_lbl = QLabel(self.coin)
+        self.name_lbl.setStyleSheet(f"""
+            font-size: 13px;
+            font-weight: 700;
+            color: {COLORS['text']};
+        """)
+        top_layout.addWidget(self.name_lbl)
+        
+        top_layout.addStretch()
+        
+        # Чекбокс
         self.cb = QCheckBox()
         self.cb.setChecked(True)
         self.cb.setStyleSheet(f"""
             QCheckBox::indicator {{
-                width: 16px;
-                height: 16px;
+                width: 18px;
+                height: 18px;
                 border-radius: 4px;
                 border: none;
                 background: {COLORS['bg_hover']};
@@ -151,12 +169,52 @@ class CoinCheckBox(QWidget):
                 background: {COLORS['accent']};
             }}
         """)
-        layout.addWidget(self.cb)
+        top_layout.addWidget(self.cb)
+        
+        main_layout.addLayout(top_layout)
+        
+        # Нижняя строка: цена + изменение
+        price_layout = QHBoxLayout()
+        price_layout.setSpacing(8)
+        
+        self.price_lbl = QLabel("—")
+        self.price_lbl.setStyleSheet(f"""
+            font-size: 12px;
+            font-weight: 600;
+            color: {COLORS['text_secondary']};
+        """)
+        price_layout.addWidget(self.price_lbl)
+        
+        self.change_lbl = QLabel("")
+        self.change_lbl.setStyleSheet(f"""
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 4px;
+        """)
+        price_layout.addWidget(self.change_lbl)
+        
+        price_layout.addStretch()
+        
+        main_layout.addLayout(price_layout)
+        
+        # Стиль виджета
+        self.setStyleSheet(f"""
+            CoinCheckBox {{
+                background: {COLORS['bg_secondary']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 8px;
+            }}
+            CoinCheckBox:hover {{
+                background: {COLORS['bg_hover']};
+                border-color: {COLORS['accent']};
+            }}
+        """)
         
         loader = CoinIconLoader()
-        loader.load(self.coin, self._set_icon, 28)
+        loader.load(self.coin, self._set_icon, 24)
         
-        self.setToolTip(self.coin)
+        self.setToolTip(f"{self.coin}/USDT")
         self.setCursor(Qt.PointingHandCursor)
         
     def _set_icon(self, pixmap: Optional[QPixmap]):
@@ -165,19 +223,58 @@ class CoinCheckBox(QWidget):
         else:
             self.icon_lbl.setText(self.coin[:2])
             self.icon_lbl.setStyleSheet(f"""
-                font-size: 11px; 
+                font-size: 10px; 
                 font-weight: 700; 
                 color: {COLORS['text']};
                 background: transparent;
                 border: none;
             """)
             self.icon_lbl.setAlignment(Qt.AlignCenter)
+    
+    def update_price(self, price: float, change_24h: float = 0.0):
+        """Обновить цену и изменение за 24ч"""
+        self.current_price = price
+        self.price_change_24h = change_24h
+        
+        # Форматируем цену
+        if price >= 1000:
+            price_str = f"${price:,.0f}"
+        elif price >= 1:
+            price_str = f"${price:.2f}"
+        else:
+            price_str = f"${price:.4f}"
+        
+        self.price_lbl.setText(price_str)
+        
+        # Форматируем изменение
+        if change_24h != 0:
+            change_str = f"{change_24h:+.2f}%"
+            if change_24h > 0:
+                color = "#30D158"  # Зеленый
+                bg = "rgba(48, 209, 88, 0.15)"
+            else:
+                color = "#FF3B30"  # Красный
+                bg = "rgba(255, 59, 48, 0.15)"
+            
+            self.change_lbl.setText(change_str)
+            self.change_lbl.setStyleSheet(f"""
+                font-size: 11px;
+                font-weight: 600;
+                color: {color};
+                background: {bg};
+                padding: 2px 6px;
+                border-radius: 4px;
+            """)
+            self.change_lbl.setVisible(True)
+        else:
+            self.change_lbl.setVisible(False)
             
     def isChecked(self) -> bool:
         return self.cb.isChecked()
         
     def setChecked(self, checked: bool):
         self.cb.setChecked(checked)
+
 
 # Константы
 MONITOR_SYMBOLS = [
@@ -811,6 +908,11 @@ class MainWindow(QMainWindow):
         self._load_settings()
         self._animate_open()
         
+        # Таймер для обновления цен монет (запускается только после старта мониторинга)
+        self.price_timer = QTimer(self)
+        self.price_timer.timeout.connect(self._update_coin_prices)
+        # НЕ запускаем автоматически - только когда пользователь нажмёт "Старт"
+        
         # Адаптивный размер
         screen = QApplication.primaryScreen().geometry()
         self.resize(int(screen.width() * 0.85), int(screen.height() * 0.85))
@@ -858,14 +960,11 @@ class MainWindow(QMainWindow):
         self.title_left.setStyleSheet(f"font-size: 22px; font-weight: 800; color: {COLORS['text']}; background: transparent; border: none;")
         layout.addWidget(self.title_left)
         
-        # Биржа
-        self.lbl_exchange = QLabel("Биржа")
-        self.lbl_exchange.setStyleSheet(LABEL_STYLE)
-        layout.addWidget(self.lbl_exchange)
+        # Биржа (скрыта, всегда Bybit Demo)
         self.exchange = ModernCombo()
-        self.exchange.addItem("Bybit Фьючерсы", "BYBIT_PERP")
-        self.exchange.addItem("Binance Спот", "BINANCE_SPOT")
-        layout.addWidget(self.exchange)
+        self.exchange.addItem("Bybit Demo", "BYBIT_DEMO")
+        self.exchange.setCurrentIndex(0)
+        self.exchange.setVisible(False)  # Скрываем выбор биржи
         
         # Таймфрейм
         self.lbl_tf = QLabel("Таймфрейм")
@@ -985,15 +1084,15 @@ class MainWindow(QMainWindow):
         header.addWidget(self.status_lbl)
         layout.addLayout(header)
         
-        # Чекбоксы монет с иконками
+        # Чекбоксы монет с иконками и ценами
         coins_grid = QGridLayout()
-        coins_grid.setSpacing(4)
+        coins_grid.setSpacing(8)
         self.coin_cbs: Dict[str, CoinCheckBox] = {}
         
         for i, sym in enumerate(MONITOR_SYMBOLS):
             cb = CoinCheckBox(sym)
             self.coin_cbs[sym] = cb
-            coins_grid.addWidget(cb, i // 5, i % 5)
+            coins_grid.addWidget(cb, i // 2, i % 2)  # 2 колонки вместо 5
         layout.addLayout(coins_grid)
         
         # Карточки сигналов
@@ -1304,16 +1403,26 @@ class MainWindow(QMainWindow):
         self._log(f"Запуск: {len(selected)} монет, ТФ={config['timeframe']}")
         self.worker.start()
         
+        # Запускаем обновление цен монет
+        self._update_coin_prices()  # Первое обновление сразу
+        self.price_timer.start(10000)  # Затем каждые 10 секунд
+        
     def _stop(self):
         if self.worker:
             self.worker.stop()
             self._log("Остановка...")
+        
+        # Останавливаем обновление цен
+        self.price_timer.stop()
             
     def _on_finished(self):
         self.worker = None
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.progress.stop()
+        
+        # Останавливаем обновление цен
+        self.price_timer.stop()
         
         self.status_lbl.setText("Остановлен")
         self.status_lbl.setStyleSheet(f"""
@@ -1343,7 +1452,9 @@ class MainWindow(QMainWindow):
         self.settings.setValue("chat", self.tg_chat.text())
         
     def _load_settings(self):
-        ex = self.settings.value("exchange", "BYBIT_PERP")
+        ex = self.settings.value("exchange", "BYBIT_DEMO")
+        # Принудительно устанавливаем Bybit Demo
+        ex = "BYBIT_DEMO"
         tf = self.settings.value("tf", "1h")
         token = self.settings.value("token", "")
         chat = self.settings.value("chat", DEFAULT_CHAT_ID)
@@ -1358,6 +1469,96 @@ class MainWindow(QMainWindow):
         # Всегда тёмная тема по умолчанию
         set_theme("dark")
         self.theme_btn.setText("🌙")
+    
+    def _update_coin_prices(self):
+        """Обновить цены монет с биржи"""
+        try:
+            import ccxt
+            from core.config import config
+            
+            # Создаём exchange для получения цен
+            api_key, api_secret = config.get_api_credentials()
+            exchange_type = config.data.get("exchange", "BYBIT_DEMO")
+            demo_mode = config.data.get("demo_mode", False)
+            
+            if exchange_type == "BYBIT_PERP" or exchange_type == "BYBIT_DEMO":
+                use_testnet = bool(demo_mode) and exchange_type == "BYBIT_PERP"
+                use_demo_trading = exchange_type == "BYBIT_DEMO"
+                exchange = ccxt.bybit({
+                    "enableRateLimit": True,
+                    "options": {
+                        "defaultType": "swap",
+                        "accountType": "unified",
+                        "enableUnifiedAccount": True,
+                        "enableUnifiedMargin": False,
+                        "unifiedMarginStatus": 6,
+                    },
+                })
+                if api_key and api_secret:
+                    exchange.apiKey = api_key
+                    exchange.secret = api_secret
+                if use_testnet:
+                    exchange.set_sandbox_mode(True)
+                if use_demo_trading:
+                    exchange.enable_demo_trading(True)
+                
+            elif exchange_type == "BINANCE_DEMO":
+                exchange = ccxt.binance({
+                    "enableRateLimit": True,
+                    "options": {"defaultType": "future"},
+                    "urls": {
+                        "api": {
+                            "public": "https://demo-fapi.binance.com/fapi/v1",
+                            "private": "https://demo-fapi.binance.com/fapi/v1",
+                        }
+                    },
+                })
+                if api_key and api_secret:
+                    exchange.apiKey = api_key
+                    exchange.secret = api_secret
+            else:
+                # По умолчанию Bybit
+                exchange = ccxt.bybit({
+                    "enableRateLimit": True,
+                    "options": {
+                        "defaultType": "swap",
+                        "accountType": "unified",
+                        "enableUnifiedAccount": True,
+                        "enableUnifiedMargin": False,
+                        "unifiedMarginStatus": 6,
+                    },
+                })
+                if api_key and api_secret:
+                    exchange.apiKey = api_key
+                    exchange.secret = api_secret
+            
+            # Получаем тикеры для всех монет
+            for symbol, coin_cb in self.coin_cbs.items():
+                try:
+                    coin = symbol.replace("USDT.P", "").replace("USDT", "")
+                    
+                    if exchange_type in ["BYBIT_PERP", "BYBIT_DEMO"]:
+                        ticker_symbol = f"{coin}/USDT:USDT"
+                    else:
+                        ticker_symbol = f"{coin}/USDT"
+                    
+                    # Получаем данные тикера
+                    ticker = exchange.fetch_ticker(ticker_symbol)
+                    
+                    if ticker:
+                        price = float(ticker.get('last', 0))
+                        change_24h = float(ticker.get('percentage', 0))
+                        
+                        # Обновляем виджет
+                        coin_cb.update_price(price, change_24h)
+                        
+                except Exception as e:
+                    # Если ошибка для конкретной монеты - пропускаем
+                    pass
+                    
+        except Exception as e:
+            # Если общая ошибка - логируем
+            self._log(f"Ошибка обновления цен: {e}")
         
     def _animate_open(self):
         effect = QGraphicsOpacityEffect(self)
@@ -1386,17 +1587,11 @@ class MainWindow(QMainWindow):
 def run():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    
-    # Не закрывать при закрытии последнего окна (для работы в трее)
-    app.setQuitOnLastWindowClosed(False)
-    
-    # Настройки для запоминания последнего окна
-    settings = QSettings("LocalSignals", "Pro")
+    app.setQuitOnLastWindowClosed(True)
     
     # Иконка приложения (для панели задач)
     import os
-    from PySide6.QtGui import QIcon, QAction
-    from PySide6.QtWidgets import QSystemTrayIcon, QMenu
+    from PySide6.QtGui import QIcon
     
     icon_path = os.path.join(os.path.dirname(__file__), "..", "content", "icon.ico")
     app_icon = QIcon(icon_path) if os.path.exists(icon_path) else QIcon()
@@ -1407,100 +1602,6 @@ def run():
     app.setFont(font)
     
     window = MainWindow()
-    
-    # Переменная для хранения последнего активного окна
-    last_active_window = {"window": "main"}  # "main" или "terminal"
-    
-    # Отслеживаем активацию окон
-    def on_window_activated(w):
-        if w == window:
-            last_active_window["window"] = "main"
-            settings.setValue("last_window", "main")
-        elif hasattr(window, 'terminal') and w == window.terminal:
-            last_active_window["window"] = "terminal"
-            settings.setValue("last_window", "terminal")
-    
-    app.focusWindowChanged.connect(on_window_activated)
-    
-    # Системный трей
-    tray = QSystemTrayIcon(app_icon, app)
-    tray.setToolTip("Local Signals Pro")
-    
-    # Функция для показа последнего активного окна
-    def show_last_window():
-        last = settings.value("last_window", "main")
-        if last == "terminal" and hasattr(window, 'terminal') and window.terminal:
-            window.terminal.show()
-            window.terminal.raise_()
-            window.terminal.activateWindow()
-        else:
-            window.show()
-            window.raise_()
-            window.activateWindow()
-    
-    # Меню трея
-    tray_menu = QMenu()
-    
-    show_action = QAction("📊 Открыть", tray_menu)
-    show_action.triggered.connect(show_last_window)
-    tray_menu.addAction(show_action)
-    
-    # Отдельные пункты для окон
-    tray_menu.addSeparator()
-    
-    main_action = QAction("🏠 Главное окно", tray_menu)
-    main_action.triggered.connect(lambda: (window.show(), window.raise_(), window.activateWindow()))
-    tray_menu.addAction(main_action)
-    
-    terminal_action = QAction("💹 Терминал", tray_menu)
-    def show_terminal():
-        if hasattr(window, 'terminal') and window.terminal:
-            window.terminal.show()
-            window.terminal.raise_()
-            window.terminal.activateWindow()
-        else:
-            window._open_terminal()
-    terminal_action.triggered.connect(show_terminal)
-    tray_menu.addAction(terminal_action)
-    
-    tray_menu.addSeparator()
-    
-    # Статус
-    status_action = QAction("⚪ Не подключено", tray_menu)
-    status_action.setEnabled(False)
-    tray_menu.addAction(status_action)
-    
-    tray_menu.addSeparator()
-    
-    quit_action = QAction("❌ Выход", tray_menu)
-    quit_action.triggered.connect(app.quit)
-    tray_menu.addAction(quit_action)
-    
-    tray.setContextMenu(tray_menu)
-    tray.show()
-    
-    # Двойной клик по трею — открыть последнее окно
-    def on_tray_activated(reason):
-        if reason == QSystemTrayIcon.DoubleClick:
-            show_last_window()
-    tray.activated.connect(on_tray_activated)
-    
-    # Переопределяем закрытие окна — сворачиваем в трей
-    original_close = window.closeEvent
-    def close_to_tray(event):
-        if tray.isVisible():
-            window.hide()
-            # НЕ скрываем терминал — он работает независимо
-            tray.showMessage(
-                "Local Signals Pro",
-                "Приложение работает в фоне. Кликните на иконку в трее.",
-                QSystemTrayIcon.Information,
-                2000
-            )
-            event.ignore()
-        else:
-            original_close(event)
-    window.closeEvent = close_to_tray
     
     window.show()
     

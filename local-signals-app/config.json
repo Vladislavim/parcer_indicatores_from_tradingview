@@ -1,0 +1,8 @@
+{
+  "exchange": "BYBIT_DEMO",
+  "api_key": "7zvXqm93x1GbM5RqPB",
+  "api_secret": "qhsaYZHigAytBhLuP2tchoiY3G4cggIJDuUl",
+  "demo_mode": true,
+  "default_leverage": 10,
+  "risk_per_trade": 2.0
+}

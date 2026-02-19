@@ -30,6 +30,7 @@
 <!-- Tech Badges -->
 <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
 <img src="https://img.shields.io/badge/Qt-PySide6-41CD52?style=flat-square&logo=qt&logoColor=white" alt="Qt">
+<img src="https://img.shields.io/badge/Binance-Testnet-F0B90B?style=flat-square&logo=binance&logoColor=white" alt="Binance">
 <img src="https://img.shields.io/badge/Bybit-API-F7A600?style=flat-square&logo=bybit&logoColor=white" alt="Bybit">
 <img src="https://img.shields.io/badge/Telegram-Bot-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram">
 <img src="https://img.shields.io/github/last-commit/Vladislavim/parcer_indicatores_from_tradingview?style=flat-square&color=00D9A5" alt="Last Commit">
@@ -78,6 +79,10 @@ LocalSignalsPro.exe
 git clone https://github.com/Vladislavim/parcer_indicatores_from_tradingview.git
 cd parcer_indicatores_from_tradingview/local-signals-app
 pip install -r requirements.txt
+
+# Настройте config.json с вашими API ключами от Binance Testnet
+# См. BINANCE_TESTNET_SETUP.md для подробных инструкций
+
 python run.py
 ```
 
@@ -107,7 +112,7 @@ EMA Market Structure<br>Smart Money Breakout<br>Trend Targets
 <td align="center" width="33%">
 <h1>⚙️</h1>
 <h3>Автоторговля</h3>
-Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
+Binance Testnet (Demo)<br>Авто SL/TP<br>HTF фильтрация
 </td>
 </tr>
 </table>
@@ -147,7 +152,7 @@ Bybit Testnet<br>Авто SL/TP<br>HTF фильтрация
 
 <img src="https://img.shields.io/badge/Telegram-УВЕДОМЛЕНИЕ-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram">
 &nbsp;
-<img src="https://img.shields.io/badge/Bybit-АВТО_ОРДЕР-F7A600?style=for-the-badge&logo=bybit&logoColor=white" alt="Bybit">
+<img src="https://img.shields.io/badge/Binance-TESTNET_DEMO-F0B90B?style=for-the-badge&logo=binance&logoColor=white" alt="Binance">
 
 <br><br>
 

@@ -13,6 +13,7 @@ DARK_THEME = {
     "bg_dark": "#0D0D0F",
     "bg_card": "#16161A", 
     "bg_hover": "#1E1E24",
+    "bg_secondary": "#1A1A1E",
     "accent": "#6C5CE7",
     "accent_light": "#A29BFE",
     "accent2": "#00CEC9",
@@ -21,13 +22,15 @@ DARK_THEME = {
     "danger": "#FF6B6B",
     "warning": "#FDCB6E",
     "text": "#FFFFFF",
+    "text_secondary": "#B0B0B8",
     "text_muted": "#72727E",
     "border": "#2D2D35",
 }
 
 LIGHT_THEME = {
     "bg_dark": "#F5F5F7",
-    "bg_card": "#FFFFFF", 
+    "bg_card": "#FFFFFF",
+    "bg_secondary": "#F8F8FA", 
     "bg_hover": "#E8E8ED",
     "accent": "#6C5CE7",
     "accent_light": "#A29BFE",
@@ -37,6 +40,7 @@ LIGHT_THEME = {
     "danger": "#E74C3C",
     "warning": "#F39C12",
     "text": "#1A1A2E",
+    "text_secondary": "#4A4A5E",
     "text_muted": "#6B6B7B",
     "border": "#D1D1D6",
 }

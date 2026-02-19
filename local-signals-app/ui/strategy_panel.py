@@ -22,6 +22,13 @@ COLORS = {
     'text_dim': '#888888',
 }
 
+TOP_COINS = [
+    "BTC", "ETH", "SOL", "XRP", "DOGE",
+    "ADA", "AVAX", "LINK", "DOT", "LTC",
+    "BCH", "TRX", "UNI", "APT", "ARB",
+    "OP", "SUI", "TON", "NEAR", "PEPE",
+]
+
 
 class StrategyCard(QFrame):
     """Карточка одной стратегии"""
@@ -189,7 +196,7 @@ class StrategyPanel(QFrame):
         layout.addLayout(header)
         
         # Info
-        info = QLabel("Выберите стратегии для параллельной работы.\nКаждая использует 5% от баланса.")
+        info = QLabel("Выберите стратегии для параллельной работы.\nРекомендуемый риск: 1-2% на стратегию.")
         info.setStyleSheet("""
             font-size: 11px; color: #888; 
             background: #1a1a22; 
@@ -213,8 +220,10 @@ class StrategyPanel(QFrame):
         risk_layout.addWidget(risk_lbl)
         
         self.risk_spin = QDoubleSpinBox()
-        self.risk_spin.setRange(1, 20)
-        self.risk_spin.setValue(5)
+        self.risk_spin.setRange(0.5, 5.0)
+        self.risk_spin.setValue(2.0)
+        self.risk_spin.setDecimals(1)
+        self.risk_spin.setSingleStep(0.5)
         self.risk_spin.setSuffix("%")
         self.risk_spin.setFixedHeight(36)
         self.risk_spin.setStyleSheet("""
@@ -241,8 +250,8 @@ class StrategyPanel(QFrame):
         lev_layout.addWidget(lev_lbl)
         
         self.leverage_spin = QSpinBox()
-        self.leverage_spin.setRange(1, 50)
-        self.leverage_spin.setValue(10)
+        self.leverage_spin.setRange(5, 10)
+        self.leverage_spin.setValue(5)
         self.leverage_spin.setSuffix("x")
         self.leverage_spin.setFixedHeight(36)
         self.leverage_spin.setStyleSheet("""
@@ -266,21 +275,20 @@ class StrategyPanel(QFrame):
         coins_lbl.setStyleSheet("font-size: 11px; color: #888; background: transparent;")
         layout.addWidget(coins_lbl)
         
-        coins_row = QHBoxLayout()
-        coins_row.setSpacing(8)
+        coins_grid = QGridLayout()
+        coins_grid.setSpacing(8)
         self.coin_checks = {}
-        for coin in ["BTC", "ETH", "SOL"]:
+        for idx, coin in enumerate(TOP_COINS):
             cb = QCheckBox(coin)
-            cb.setChecked(True)
+            cb.setChecked(coin in ["BTC", "ETH", "SOL", "XRP", "DOGE"])
             cb.setStyleSheet("""
                 QCheckBox { color: white; font-size: 11px; background: transparent; }
                 QCheckBox::indicator { width: 16px; height: 16px; border-radius: 3px; border: 2px solid #444; background: #1a1a22; }
                 QCheckBox::indicator:checked { background: #6C5CE7; border-color: #6C5CE7; }
             """)
             self.coin_checks[coin] = cb
-            coins_row.addWidget(cb)
-        coins_row.addStretch()
-        layout.addLayout(coins_row)
+            coins_grid.addWidget(cb, idx // 5, idx % 5)
+        layout.addLayout(coins_grid)
         
         # Scroll area для стратегий
         scroll = QScrollArea()
@@ -289,7 +297,7 @@ class StrategyPanel(QFrame):
             QScrollArea { background: transparent; border: none; }
             QScrollArea > QWidget > QWidget { background: transparent; }
         """)
-        scroll.setMaximumHeight(350)
+        scroll.setMinimumHeight(420)
         
         scroll_content = QWidget()
         scroll_content.setStyleSheet("background: transparent;")
