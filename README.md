@@ -1,3 +1,27 @@
+<div align="center">
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:F7A600,100:FF6B6B&height=180&section=header&text=LOCAL%20SIGNALS%20PRO&fontSize=44&fontColor=ffffff&animation=fadeIn&fontAlignY=38&desc=Bybit%20Trading%20Terminal&descSize=18&descAlignY=58" width="100%">
+
+<a href="../../releases"><img src="https://img.shields.io/badge/Download-Releases-F7A600?style=for-the-badge&logo=github&logoColor=white" alt="Download"></a>
+<a href="../../issues"><img src="https://img.shields.io/badge/Report-Issue-FF6B6B?style=for-the-badge&logo=github&logoColor=white" alt="Issues"></a>
+<a href="../../stargazers"><img src="https://img.shields.io/badge/GitHub-Star-181717?style=for-the-badge&logo=github&logoColor=white" alt="Star"></a>
+
+<br>
+<br>
+
+<img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
+<img src="https://img.shields.io/badge/Qt-PySide6-41CD52?style=flat-square&logo=qt&logoColor=white" alt="Qt">
+<img src="https://img.shields.io/badge/Bybit-API-F7A600?style=flat-square&logoColor=white" alt="Bybit">
+<img src="https://img.shields.io/badge/Mode-Demo%2FTest-00D9A5?style=flat-square&logo=marketo&logoColor=white" alt="Mode">
+<img src="https://img.shields.io/github/last-commit/Vladislavim/parcer_indicatores_from_tradingview?style=flat-square&color=00D9A5" alt="Last Commit">
+
+<br>
+<br>
+
+<img src="local-signals-app/content/ui%20git.jpg" alt="Local Signals Pro UI" width="90%">
+
+</div>
+
 # Local Signals Pro (Bybit Trading Terminal)
 
 Local desktop terminal for Bybit futures demo/test trading with manual orders, auto mode, and multi-strategy execution.
