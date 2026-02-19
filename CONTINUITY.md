@@ -18,11 +18,13 @@ State:
   - Root README was rewritten to accurate current Bybit terminal flow.
   - Styled header badges were reintroduced and pushed previously.
   - Added compatibility layer for Bybit trading-stop API variants in terminal code.
+  - Expanded README with richer badge rows (repo status, stack, safety, setup links).
+  - Created and committed this continuity ledger.
+  - Pushed latest docs changes to `origin/main` (commit `bd5082b`).
 - Now:
-  - Expanding README badge section with richer, cleaner "beautiful badge" set.
+  - Waiting for user review of README visuals.
 - Next:
-  - Commit README update.
-  - Push to `origin/main`.
+  - If requested, tune badge palette/layout (more minimal or more flashy).
 
 Open questions (UNCONFIRMED if needed):
 - UNCONFIRMED: user may want an even more "graphic-heavy" README (gifs/typing banner). Current update uses only stable badges and static banner.
@@ -32,6 +34,6 @@ Working set (files/ids/commands):
   - `README.md`
   - `CONTINUITY.md`
 - Recent commands:
-  - `Get-Content README.md -Raw`
   - `git status --short`
+  - `git commit -m "docs: enhance README badge layout and add continuity ledger"`
   - `git push origin main`
