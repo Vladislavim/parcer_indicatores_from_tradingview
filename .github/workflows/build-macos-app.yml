@@ -1,0 +1,84 @@
+name: Build macOS App
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'local-signals-app/**'
+      - '.github/workflows/build-macos-app.yml'
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Prepare clean runtime files (no secrets in artifact)
+        shell: bash
+        run: |
+          cd local-signals-app
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          cfg = {
+              "exchange": "BYBIT_DEMO",
+              "api_key": "YOUR_BYBIT_API_KEY",
+              "api_secret": "YOUR_BYBIT_API_SECRET",
+              "demo_mode": True,
+              "default_leverage": 10,
+              "risk_per_trade": 2.0,
+          }
+          Path("config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+          Path("trade_journal.json").write_text("[]\n", encoding="utf-8")
+          data = Path("data")
+          data.mkdir(exist_ok=True)
+          (data / "runtime_events.jsonl").write_text("", encoding="utf-8")
+          (data / "equity_snapshots.csv").write_text(
+              "timestamp,available,total,unrealized_pnl,open_positions\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install --no-compile -r local-signals-app/requirements.txt pyinstaller
+
+      - name: Build .app with PyInstaller
+        shell: bash
+        run: |
+          cd local-signals-app
+          pyinstaller \
+            --noconfirm \
+            --windowed \
+            --name "Bybit Trading Terminal" \
+            --add-data "content:content" \
+            run.py
+
+      - name: Package macOS app zip
+        shell: bash
+        run: |
+          cd local-signals-app/dist
+          ditto -c -k --sequesterRsrc --keepParent "Bybit Trading Terminal.app" "Bybit-Trading-Terminal-macOS.zip"
+
+      - name: Upload macOS app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Bybit-Trading-Terminal-macOS
+          path: |
+            local-signals-app/dist/Bybit-Trading-Terminal-macOS.zip
+            local-signals-app/dist/Bybit Trading Terminal.app
+          if-no-files-found: error
+          retention-days: 14
+
