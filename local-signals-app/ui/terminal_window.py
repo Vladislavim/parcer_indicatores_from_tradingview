@@ -13,6 +13,7 @@ import time
 from datetime import datetime
 from typing import List, Optional, Dict
 from decimal import Decimal
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QSettings, QThread, Signal, QObject
 from PySide6.QtGui import QColor, QPainter, QLinearGradient, QRadialGradient, QPixmap, QPen
@@ -31,6 +32,12 @@ except ImportError:
     ccxt = None
 
 from ui.styles import COLORS, get_current_theme
+from core.storage import (
+    get_data_dir,
+    get_equity_file,
+    get_runtime_events_file,
+    migrate_if_missing,
+)
 
 TOP_SYMBOLS = [
     "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", "DOGE/USDT:USDT",
@@ -43,6 +50,19 @@ TOP_COINS = [s.split("/")[0] for s in TOP_SYMBOLS]
 
 # Bybit logo URL
 BYBIT_LOGO_URL = "https://s2.coinmarketcap.com/static/img/exchanges/64x64/521.png"
+
+
+def _as_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "y", "on"):
+        return True
+    if text in ("0", "false", "no", "n", "off"):
+        return False
+    return default
 
 
 def _bybit_market_id(exchange, symbol: str) -> str:
@@ -60,16 +80,69 @@ def _bybit_market_id(exchange, symbol: str) -> str:
     return s.split(":", 1)[0]
 
 
+def _to_exchange_price(exchange, symbol: str, value: float | None) -> float | None:
+    """
+    Нормализует цену под точность инструмента биржи (tick size / precision),
+    чтобы для дешевых монет не схлопывались SL/TP.
+    """
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except Exception:
+        return None
+    if v <= 0:
+        return None
+
+    # Приоритет: встроенная нормализация ccxt.
+    try:
+        px = exchange.price_to_precision(symbol, v)
+        pxf = float(px)
+        if pxf > 0:
+            return pxf
+    except Exception:
+        pass
+
+    # Fallback: ручное округление по precision.price.
+    try:
+        m = exchange.market(symbol)
+        p = (m or {}).get("precision", {}).get("price")
+        if p is not None:
+            p = int(p)
+            return round(v, max(0, p))
+    except Exception:
+        pass
+    return v
+
+
+def _fmt_price(value: float | int | None) -> str:
+    """
+    Читабельный формат цены без потери полезной точности для дешевых монет.
+    """
+    try:
+        v = float(value)
+    except Exception:
+        return "—"
+    av = abs(v)
+    if av >= 1000:
+        return f"{v:,.2f}"
+    if av >= 10:
+        return f"{v:,.3f}"
+    if av >= 1:
+        return f"{v:,.4f}"
+    if av >= 0.1:
+        return f"{v:,.5f}"
+    if av >= 0.01:
+        return f"{v:,.6f}"
+    return f"{v:,.8f}"
+
+
 def _call_set_trading_stop(exchange, symbol: str, stop_loss: float | None = None, take_profit: float | None = None):
     """
     Совместимый вызов установки SL/TP для разных версий ccxt.bybit.
     """
-    sl = None
-    tp = None
-    if stop_loss is not None:
-        sl = round(float(stop_loss), 2)
-    if take_profit is not None:
-        tp = round(float(take_profit), 2)
+    sl = _to_exchange_price(exchange, symbol, stop_loss)
+    tp = _to_exchange_price(exchange, symbol, take_profit)
     if sl is None and tp is None:
         raise ValueError("set_trading_stop called without SL/TP values")
 
@@ -170,13 +243,13 @@ class AutoTradeWorker(QThread):
 
     def _estimate_sl_tp(self, symbol: str, timeframe: str, price: float) -> tuple[float, float, str]:
         """
-        Профессиональный расчёт SL/TP:
-        ATR-волатильность + сила тренда (EMA20/EMA50) + адаптивный RR.
+        Жёсткий профиль риска: RR всегда 1:2 (TP = 2 * SL).
+        SL адаптируется к волатильности (ATR), TP вычисляется строго от SL.
         """
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=90)
             if not ohlcv or len(ohlcv) < 30:
-                return 1.0, 2.3, "fallback"
+                return 1.0, 2.0, "fallback; RR=1:2"
 
             highs = [float(x[2]) for x in ohlcv]
             lows = [float(x[3]) for x in ohlcv]
@@ -206,12 +279,6 @@ class AutoTradeWorker(QThread):
                     out.append((v - out[-1]) * mult + out[-1])
                 return out
 
-            ema20 = ema(closes, 20)
-            ema50 = ema(closes, 50)
-            trend_gap_pct = 0.0
-            if ema20 and ema50 and price > 0:
-                trend_gap_pct = abs(ema20[-1] - ema50[-1]) / price * 100.0
-
             if atr_pct < 0.65:
                 vol_state = "low-vol"
                 sl_mult = 1.45
@@ -222,25 +289,12 @@ class AutoTradeWorker(QThread):
                 vol_state = "normal-vol"
                 sl_mult = 1.25
 
-            if trend_gap_pct >= 0.90:
-                rr = 3.0
-            elif trend_gap_pct >= 0.45:
-                rr = 2.4
-            else:
-                rr = 1.9
-
-            if vol_state == "high-vol":
-                rr -= 0.25
-            elif vol_state == "low-vol":
-                rr += 0.20
-            rr = self._clamp(rr, 1.6, 3.2)
-
             sl_pct = self._clamp(atr_pct * sl_mult, 0.45, 2.8)
-            tp_pct = self._clamp(sl_pct * rr, 1.0, 7.5)
-            model = f"{vol_state}, gap={trend_gap_pct:.2f}%, RR=1:{rr:.2f}"
+            tp_pct = self._clamp(sl_pct * 2.0, 1.0, 7.5)
+            model = f"{vol_state}, RR=1:2.00"
             return sl_pct, tp_pct, model
         except Exception:
-            return 1.0, 2.3, "fallback"
+            return 1.0, 2.0, "fallback; RR=1:2"
         
     def stop(self):
         self._stop = True
@@ -1161,7 +1215,7 @@ class PositionRow(QFrame):
         
         self.leverage_lbl.setText(f"{leverage}x")
         self.meta_lbl.setText(
-            f"Размер: {size:.4f} | Вход: ${entry:,.2f} | Марк: ${mark:,.2f}"
+            f"Размер: {size:.4f} | Вход: ${_fmt_price(entry)} | Марк: ${_fmt_price(mark)}"
         )
         details = ""
         if strategy:
@@ -1619,7 +1673,7 @@ class AutoTradePanel(QFrame):
         self.auto_leverage = QSpinBox()
         self.auto_leverage.setFixedHeight(46)
         self.auto_leverage.setRange(5, 10)
-        self.auto_leverage.setValue(5)
+        self.auto_leverage.setValue(10)
         self.auto_leverage.setSuffix("x")
         self.auto_leverage.setStyleSheet("""
             QSpinBox {
@@ -1811,11 +1865,15 @@ class BybitTerminal(QMainWindow):
         self._last_refresh_ts = 0.0
         self._refresh_pending = False
         self._refresh_min_interval_sec = 0.8
+        self._ui_state_restoring = False
+        self._ui_state_hooks_bound = False
         
-        self.data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-        os.makedirs(self.data_dir, exist_ok=True)
-        self.events_file = os.path.join(self.data_dir, "runtime_events.jsonl")
-        self.equity_file = os.path.join(self.data_dir, "equity_snapshots.csv")
+        self.data_dir = str(get_data_dir())
+        self.events_file = str(get_runtime_events_file())
+        self.equity_file = str(get_equity_file())
+        legacy_data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+        migrate_if_missing(Path(self.events_file), Path(os.path.join(legacy_data_dir, "runtime_events.jsonl")))
+        migrate_if_missing(Path(self.equity_file), Path(os.path.join(legacy_data_dir, "equity_snapshots.csv")))
         self._init_runtime_storage()
         self.io_flush_timer = QTimer(self)
         self.io_flush_timer.setTimerType(Qt.CoarseTimer)
@@ -2029,7 +2087,7 @@ class BybitTerminal(QMainWindow):
             }}
         """)
         self.positions_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.positions_scroll.setMinimumHeight(150)
+        self.positions_scroll.setMinimumHeight(260)
         
         self.positions_widget = QWidget()
         self.positions_inner_layout = QVBoxLayout(self.positions_widget)
@@ -2043,7 +2101,7 @@ class BybitTerminal(QMainWindow):
         self.positions_inner_layout.addStretch()
         
         self.positions_scroll.setWidget(self.positions_widget)
-        positions_layout.addWidget(self.positions_scroll)
+        positions_layout.addWidget(self.positions_scroll, 2)
         
         # Trade history (последние сделки)
         self.history_table = TradeHistoryTable()
@@ -2148,6 +2206,10 @@ class BybitTerminal(QMainWindow):
         # Для совместимости
         self.log_lbl = None
         self.log_messages = []
+
+        # Persist/restore UI selections (coins/strategies/order fields/tabs)
+        self._bind_ui_state_persistence()
+        self._load_ui_state()
         
         # Root layout
         root = QVBoxLayout(central)
@@ -2254,18 +2316,21 @@ class BybitTerminal(QMainWindow):
         header.addWidget(title)
         header.addStretch()
         
-        # Скрываем переключатель - всегда Bybit Demo
+        # Сеть Bybit: Demo/Mainnet
         self.network_combo = QComboBox()
         self.network_combo.addItem("🧪 Demo", "demo")
+        self.network_combo.addItem("🏛 Mainnet", "mainnet")
         self.network_combo.setFixedWidth(110)
-        self.network_combo.setVisible(False)  # Скрываем выбор
-        self.network_combo.setCurrentIndex(0)
+        saved_network = str(self.settings.value("network", "demo") or "demo")
+        idx_net = self.network_combo.findData(saved_network)
+        self.network_combo.setCurrentIndex(idx_net if idx_net >= 0 else 0)
+        self.network_combo.currentIndexChanged.connect(self._on_network_changed)
         header.addWidget(self.network_combo)
         layout.addLayout(header)
         
-        # Убираем предупреждение для mainnet
-        self.mainnet_warning = QLabel("")
-        self.mainnet_warning.setVisible(False)
+        self.mainnet_warning = QLabel("⚠️ Mainnet: реальная торговля. Проверь размер позиции и риск.")
+        self.mainnet_warning.setStyleSheet(f"font-size: 11px; color: {COLORS['warning']};")
+        self.mainnet_warning.setVisible(self.network_combo.currentData() == "mainnet")
         layout.addWidget(self.mainnet_warning)
         
         # Профили API
@@ -2320,7 +2385,12 @@ class BybitTerminal(QMainWindow):
                 color: {COLORS['text']};
             }}
         """)
-        # Загружаем ключ: приоритет у config.json, затем QSettings
+        self.api_secret = QLineEdit()
+        self.api_secret.setPlaceholderText("API Secret")
+        self.api_secret.setEchoMode(QLineEdit.Password)
+        self.api_secret.setStyleSheet(self.api_key.styleSheet())
+
+        # Загружаем ключ: приоритет у сохранённых профилей/QSettings, config.json только как fallback
         cfg_key = ""
         cfg_secret = ""
         try:
@@ -2328,28 +2398,41 @@ class BybitTerminal(QMainWindow):
             cfg_key, cfg_secret = config.get_api_credentials()
         except Exception:
             cfg_key, cfg_secret = "", ""
-        saved_key = self.settings.value("api_key", "")
-        if cfg_key:
-            self.api_key.setText(cfg_key)
-            self.settings.setValue("api_key", cfg_key)
-        elif saved_key:
-            self.api_key.setText(saved_key)
-        layout.addWidget(self.api_key)
-        
-        self.api_secret = QLineEdit()
-        self.api_secret.setPlaceholderText("API Secret")
-        self.api_secret.setEchoMode(QLineEdit.Password)
-        self.api_secret.setStyleSheet(self.api_key.styleSheet())
-        # Загружаем секрет: приоритет у config.json, затем QSettings
-        saved_secret = self.settings.value("api_secret", "")
-        if cfg_secret:
-            self.api_secret.setText(cfg_secret)
-            self.settings.setValue("api_secret", cfg_secret)
-        elif saved_secret:
-            self.api_secret.setText(saved_secret)
-        layout.addWidget(self.api_secret)
-        
+        saved_key = str(self.settings.value("api_key", "") or "")
+        saved_secret = str(self.settings.value("api_secret", "") or "")
+
+        # Сначала загружаем профили, чтобы не перетирать выбранный/default профиль config-ключом.
         self._load_api_profiles(cfg_key, cfg_secret)
+
+        selected_key = ""
+        selected_secret = ""
+        if saved_key and saved_secret:
+            selected_key = saved_key
+            selected_secret = saved_secret
+        elif cfg_key and cfg_secret:
+            selected_key = cfg_key
+            selected_secret = cfg_secret
+            # Кладём в QSettings только как fallback, не как жёсткий override.
+            self.settings.setValue("api_key", cfg_key)
+            self.settings.setValue("api_secret", cfg_secret)
+        elif getattr(self, "api_profiles", []):
+            default_name = str(self.settings.value("api_default_profile", "") or "")
+            selected = None
+            if default_name:
+                for p in self.api_profiles:
+                    if str(p.get("name")) == default_name:
+                        selected = p
+                        break
+            if selected is None:
+                selected = self.api_profiles[0]
+            selected_key = str(selected.get("api_key") or "")
+            selected_secret = str(selected.get("api_secret") or "")
+
+        self.api_key.setText(selected_key)
+        self.api_secret.setText(selected_secret)
+        
+        layout.addWidget(self.api_key)
+        layout.addWidget(self.api_secret)
         
         self.connect_btn = QPushButton("Подключиться")
         self.connect_btn.setFixedHeight(34)
@@ -2483,6 +2566,14 @@ class BybitTerminal(QMainWindow):
         network = self.network_combo.currentData()
         self.mainnet_warning.setVisible(network == "mainnet")
         self.settings.setValue("network", network)
+        try:
+            from core.config import config
+            is_mainnet = str(network) == "mainnet"
+            config.set("exchange", "BYBIT_PERP" if is_mainnet else "BYBIT_DEMO")
+            config.set("demo_mode", not is_mainnet)
+            config.save()
+        except Exception:
+            pass
         
         # Отключаемся если были подключены
         if self.exchange:
@@ -2572,13 +2663,18 @@ class BybitTerminal(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Введи API Key и Secret")
             return
         
-        # Проверяем сеть - всегда demo
-        is_mainnet = False
-        
-        # Убираем предупреждение для mainnet
-        
-        # Показываем что идёт подключение
-        network_name = "Bybit Demo"
+        network = self.network_combo.currentData() if hasattr(self, "network_combo") else "demo"
+        is_mainnet = str(network) == "mainnet"
+        network_name = "Bybit Mainnet" if is_mainnet else "Bybit Demo"
+
+        # Persist selected network into config for ConnectWorker.
+        try:
+            from core.config import config
+            config.set("exchange", "BYBIT_PERP" if is_mainnet else "BYBIT_DEMO")
+            config.set("demo_mode", not is_mainnet)
+            config.save()
+        except Exception:
+            pass
         
         # Защита от повторного запуска
         if hasattr(self, 'connect_worker') and self.connect_worker and self.connect_worker.isRunning():
@@ -2608,7 +2704,7 @@ class BybitTerminal(QMainWindow):
         self.settings.setValue("api_secret", api_secret)
         self.settings.setValue("api_auto_connect", "true")
         
-        network_name = "Bybit Demo 🧪"
+        network_name = "Bybit Mainnet" if is_mainnet else "Bybit Demo 🧪"
         status_color = COLORS['success']
         
         self.status_lbl.setText(f"🟢 {network_name}")
@@ -2691,6 +2787,99 @@ class BybitTerminal(QMainWindow):
             self.auto_timer.timeout.connect(self._run_auto_worker)
         self.auto_timer.start(60000)
         QTimer.singleShot(1000, self._run_auto_worker)
+
+    def _bind_ui_state_persistence(self):
+        """Подвязывает автосохранение UI-состояния (монеты/стратегии/вкладки/ручной ордер)."""
+        if getattr(self, "_ui_state_hooks_bound", False):
+            return
+        self._ui_state_hooks_bound = True
+
+        # Правая колонка: выбранная вкладка
+        if hasattr(self, "right_tabs") and self.right_tabs:
+            self.right_tabs.currentChanged.connect(lambda _=None: self._save_ui_state())
+
+        # Ручной ордер
+        try:
+            self.order_panel.symbol_combo.currentIndexChanged.connect(lambda _=None: self._save_ui_state())
+            self.order_panel.position_input.valueChanged.connect(lambda _=None: self._save_ui_state())
+            self.order_panel.leverage_spin.valueChanged.connect(lambda _=None: self._save_ui_state())
+            self.order_panel.sl_spin.valueChanged.connect(lambda _=None: self._save_ui_state())
+            self.order_panel.tp_spin.valueChanged.connect(lambda _=None: self._save_ui_state())
+        except Exception:
+            pass
+
+        # Автоторговля
+        try:
+            self.auto_panel.tf_combo.currentIndexChanged.connect(lambda _=None: self._save_auto_settings())
+            self.auto_panel.auto_leverage.valueChanged.connect(lambda _=None: self._save_auto_settings())
+            self.auto_panel.risk_spin.valueChanged.connect(lambda _=None: self._save_auto_settings())
+            for cb in self.auto_panel.coin_checks.values():
+                cb.toggled.connect(lambda _=None: self._save_auto_settings())
+        except Exception:
+            pass
+
+        # Мульти-стратегии
+        try:
+            self.strategy_panel.risk_spin.valueChanged.connect(lambda _=None: self._save_multi_settings(self.strategy_panel.stop_btn.isEnabled()))
+            self.strategy_panel.leverage_spin.valueChanged.connect(lambda _=None: self._save_multi_settings(self.strategy_panel.stop_btn.isEnabled()))
+            for cb in self.strategy_panel.coin_checks.values():
+                cb.toggled.connect(lambda _=None: self._save_multi_settings(self.strategy_panel.stop_btn.isEnabled()))
+            for card in self.strategy_panel.strategy_cards.values():
+                card.toggled.connect(lambda *_args: self._save_multi_settings(self.strategy_panel.stop_btn.isEnabled()))
+        except Exception:
+            pass
+
+    def _save_ui_state(self):
+        """Сохраняет визуальное состояние терминала (вкладка, ручной ордер)."""
+        if getattr(self, "_ui_state_restoring", False):
+            return
+        try:
+            if hasattr(self, "right_tabs") and self.right_tabs:
+                self.settings.setValue("ui_right_tab", int(self.right_tabs.currentIndex()))
+
+            if hasattr(self, "order_panel") and self.order_panel:
+                symbol = str(self.order_panel.symbol_combo.currentData() or "")
+                if symbol:
+                    self.settings.setValue("manual_symbol", symbol)
+                self.settings.setValue("manual_position_usdt", float(self.order_panel.position_input.value()))
+                self.settings.setValue("manual_leverage", int(self.order_panel.leverage_spin.value()))
+                self.settings.setValue("manual_sl_pct", float(self.order_panel.sl_spin.value()))
+                self.settings.setValue("manual_tp_pct", float(self.order_panel.tp_spin.value()))
+        except Exception:
+            pass
+
+    def _load_ui_state(self):
+        """Восстанавливает визуальное состояние терминала (вкладка, ручной ордер)."""
+        self._ui_state_restoring = True
+        try:
+            # Ручной ордер
+            manual_symbol = str(self.settings.value("manual_symbol", "") or "")
+            if manual_symbol and hasattr(self, "order_panel"):
+                idx = self.order_panel.symbol_combo.findData(manual_symbol)
+                if idx >= 0:
+                    self.order_panel.symbol_combo.setCurrentIndex(idx)
+
+                self.order_panel.position_input.setValue(float(self.settings.value("manual_position_usdt", self.order_panel.position_input.value(), type=float)))
+                self.order_panel.leverage_spin.setValue(int(self.settings.value("manual_leverage", self.order_panel.leverage_spin.value(), type=int)))
+                self.order_panel.sl_spin.setValue(float(self.settings.value("manual_sl_pct", self.order_panel.sl_spin.value(), type=float)))
+                self.order_panel.tp_spin.setValue(float(self.settings.value("manual_tp_pct", self.order_panel.tp_spin.value(), type=float)))
+            elif hasattr(self, "order_panel"):
+                # even if symbol missing, restore numbers
+                self.order_panel.position_input.setValue(float(self.settings.value("manual_position_usdt", self.order_panel.position_input.value(), type=float)))
+                self.order_panel.leverage_spin.setValue(int(self.settings.value("manual_leverage", self.order_panel.leverage_spin.value(), type=int)))
+                self.order_panel.sl_spin.setValue(float(self.settings.value("manual_sl_pct", self.order_panel.sl_spin.value(), type=float)))
+                self.order_panel.tp_spin.setValue(float(self.settings.value("manual_tp_pct", self.order_panel.tp_spin.value(), type=float)))
+
+            # Правая вкладка
+            if hasattr(self, "right_tabs") and self.right_tabs:
+                tab_idx = int(self.settings.value("ui_right_tab", 0, type=int))
+                if 0 <= tab_idx < self.right_tabs.count():
+                    self.right_tabs.setCurrentIndex(tab_idx)
+        except Exception:
+            pass
+        finally:
+            self._ui_state_restoring = False
+            self._save_ui_state()
         
     def _on_connect_error(self, error: str):
         """Вызывается при ошибке подключения"""
@@ -2866,6 +3055,7 @@ class BybitTerminal(QMainWindow):
         sl_price = float(meta.get('sl_price') or 0)
         tp_price = float(meta.get('tp_price') or 0)
         timestamp_open = meta.get('timestamp_open')
+        journal_notes = self._build_trade_notes(meta, notes)
 
         self.history_table.add_trade(
             datetime.now().strftime("%H:%M:%S"),
@@ -2888,7 +3078,7 @@ class BybitTerminal(QMainWindow):
             sl_price=sl_price,
             tp_price=tp_price,
             timestamp_open=timestamp_open,
-            notes=notes,
+            notes=journal_notes,
         )
 
         if hasattr(self, '_tracked_positions'):
@@ -2918,6 +3108,7 @@ class BybitTerminal(QMainWindow):
         tf = "1h"
         if hasattr(self, 'auto_panel') and self.auto_panel:
             tf = self.auto_panel.tf_combo.currentData() or "1h"
+        allow_signal_close = _as_bool(self.settings.value("allow_signal_close", "false"), default=False)
         opposite_min_confluence = 3
         opposite_confirmations = 2
         now_ts = time.time()
@@ -2966,6 +3157,8 @@ class BybitTerminal(QMainWindow):
                         continue
 
             # Сильный обратный сигнал — считаем реже, чтобы не грузить UI/индикаторы.
+            if not allow_signal_close:
+                continue
             if not signal_scan_due:
                 continue
             if signal_checked >= signal_limit:
@@ -3223,7 +3416,8 @@ class BybitTerminal(QMainWindow):
                     close_reason=close_reason,
                     sl_price=pos_data.get('sl_price', 0),
                     tp_price=pos_data.get('tp_price', 0),
-                    timestamp_open=pos_data.get('timestamp_open')
+                    timestamp_open=pos_data.get('timestamp_open'),
+                    notes=self._build_trade_notes(pos_data, f"Автосинхронизация закрытия ({close_reason})"),
                 )
             except Exception as e:
                 self._log(f"⚠️ Ошибка записи в журнал: {e}")
@@ -3292,6 +3486,11 @@ class BybitTerminal(QMainWindow):
             
             for pos in positions:
                 meta = self._get_position_meta(pos.get('symbol') or '')
+                open_reason = str(meta.get('open_reason') or '')
+                risk_model = str(meta.get('risk_model') or '')
+                reason_details = open_reason
+                if risk_model:
+                    reason_details = f"{reason_details} | {risk_model}" if reason_details else risk_model
                 row = PositionRow()
                 row.update_data(
                     pos.get('symbol') or '',
@@ -3303,7 +3502,7 @@ class BybitTerminal(QMainWindow):
                     float(pos.get('percentage') or 0),
                     int(pos.get('leverage') or 1),
                     str(meta.get('strategy') or ''),
-                    str(meta.get('open_reason') or ''),
+                    reason_details,
                 )
                 row.close_clicked.connect(self._close_position)
                 self.positions_layout.insertWidget(self.positions_layout.count() - 1, row)
@@ -3418,17 +3617,11 @@ class BybitTerminal(QMainWindow):
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=90)
             if not ohlcv or len(ohlcv) < 30:
-                return 1.0, 2.2, "fallback"
+                return 1.0, 2.0, "fallback; RR=1:2"
 
             closes = [float(x[4]) for x in ohlcv]
             atr = self._calc_atr_from_ohlcv(ohlcv, 14)
             atr_pct = (atr / entry_price) * 100.0 if entry_price > 0 else 0.0
-
-            ema20 = self._calc_ema_series(closes, 20)
-            ema50 = self._calc_ema_series(closes, 50)
-            trend_gap_pct = 0.0
-            if ema20 and ema50 and entry_price > 0:
-                trend_gap_pct = abs(ema20[-1] - ema50[-1]) / entry_price * 100.0
 
             if atr_pct < 0.65:
                 vol_state = "low-vol"
@@ -3440,25 +3633,12 @@ class BybitTerminal(QMainWindow):
                 vol_state = "normal-vol"
                 sl_mult = 1.25
 
-            if trend_gap_pct >= 0.90:
-                rr = 3.0
-            elif trend_gap_pct >= 0.45:
-                rr = 2.4
-            else:
-                rr = 1.9
-
-            if vol_state == "high-vol":
-                rr -= 0.25
-            elif vol_state == "low-vol":
-                rr += 0.20
-            rr = max(1.6, min(rr, 3.2))
-
             sl_pct = max(0.45, min(atr_pct * sl_mult, 2.8))
-            tp_pct = max(1.0, min(sl_pct * rr, 7.5))
-            model = f"{vol_state}, gap={trend_gap_pct:.2f}%, RR=1:{rr:.2f}"
+            tp_pct = max(1.0, min(sl_pct * 2.0, 7.5))
+            model = f"{vol_state}, RR=1:2.00"
             return sl_pct, tp_pct, model
         except Exception:
-            return 1.0, 2.2, "fallback"
+            return 1.0, 2.0, "fallback; RR=1:2"
 
     def _refine_sl_tp_prices(
         self,
@@ -3492,12 +3672,8 @@ class BybitTerminal(QMainWindow):
             tp_pct = market_tp_pct
             src = "market-only"
 
-        # Базовый контроль RR как у риск-менеджмента проп-команд.
-        rr_now = tp_pct / max(sl_pct, 1e-9)
-        if rr_now < 1.6:
-            tp_pct = sl_pct * 1.6
-        elif rr_now > 3.5:
-            tp_pct = sl_pct * 3.5
+        # Жесткий фикс: RR всегда 1:2.
+        tp_pct = sl_pct * 2.0
 
         sl_pct = max(0.45, min(sl_pct, 3.0))
         tp_pct = max(1.0, min(tp_pct, 8.0))
@@ -3508,8 +3684,10 @@ class BybitTerminal(QMainWindow):
         else:
             refined_sl = entry_price * (1 + sl_pct / 100.0)
             refined_tp = entry_price * (1 - tp_pct / 100.0)
+        refined_sl = _to_exchange_price(self.exchange, symbol, refined_sl) or refined_sl
+        refined_tp = _to_exchange_price(self.exchange, symbol, refined_tp) or refined_tp
 
-        return round(refined_sl, 2), round(refined_tp, 2), f"{src}; {model}"
+        return float(refined_sl), float(refined_tp), f"{src}; {model}; RR=1:2"
 
     def _ensure_exchange_sltp(self, symbol: str, sl_price: float, tp_price: float) -> bool:
         """Гарантированно пытается поставить SL/TP на бирже для уже открытой позиции."""
@@ -3559,9 +3737,13 @@ class BybitTerminal(QMainWindow):
         """
         Строгое открытие: позиция может остаться открытой только если SL/TP установлены на бирже.
         """
+        sl_norm = _to_exchange_price(self.exchange, symbol, sl_price)
+        tp_norm = _to_exchange_price(self.exchange, symbol, tp_price)
+        if sl_norm is None or tp_norm is None:
+            raise RuntimeError(f"{source}: некорректные SL/TP после нормализации ({sl_price}, {tp_price})")
         params = {
-            'stopLoss': {'type': 'market', 'triggerPrice': round(float(sl_price), 2)},
-            'takeProfit': {'type': 'market', 'triggerPrice': round(float(tp_price), 2)},
+            'stopLoss': {'type': 'market', 'triggerPrice': sl_norm},
+            'takeProfit': {'type': 'market', 'triggerPrice': tp_norm},
         }
         opened = False
         try:
@@ -3666,8 +3848,8 @@ class BybitTerminal(QMainWindow):
             actual_sl_pct = (abs(float(price) - float(sl_price)) / float(price) * 100.0) if price > 0 else 0.0
             actual_tp_pct = (abs(float(tp_price) - float(price)) / float(price) * 100.0) if price > 0 else 0.0
             self._log(f"   🧠 SL/TP модель: {sltp_model}")
-            self._log(f"   🛡️ SL: ${sl_price:,.2f} ({actual_sl_pct:.2f}%)")
-            self._log(f"   🎯 TP: ${tp_price:,.2f} ({actual_tp_pct:.2f}%)")
+            self._log(f"   🛡️ SL: ${_fmt_price(sl_price)} ({actual_sl_pct:.2f}%)")
+            self._log(f"   🎯 TP: ${_fmt_price(tp_price)} ({actual_tp_pct:.2f}%)")
 
             sl_tp_set = self._open_order_strict_sltp(
                 symbol=symbol,
@@ -3722,7 +3904,26 @@ class BybitTerminal(QMainWindow):
             if pos.get('symbol') == symbol:
                 self._close_position_by_rules(pos, close_reason="Manual", notes="Закрыто пользователем")
                 break
-    
+
+    def _build_trade_notes(self, meta: Optional[dict] = None, close_notes: str = "") -> str:
+        """Собирает подробные заметки для журнала: причина входа, модель риска, детали закрытия."""
+        meta = meta or {}
+        parts = []
+        open_reason = str(meta.get("open_reason") or "").strip()
+        risk_model = str(meta.get("risk_model") or "").strip()
+        strategy = str(meta.get("strategy") or "").strip()
+        close_notes = str(close_notes or "").strip()
+
+        if strategy:
+            parts.append(f"Стратегия: {strategy}")
+        if open_reason:
+            parts.append(f"Причина входа: {open_reason}")
+        if risk_model:
+            parts.append(f"Предпосылки/модель: {risk_model}")
+        if close_notes:
+            parts.append(f"Закрытие: {close_notes}")
+        return " | ".join(parts)
+
     def _add_to_journal(self, symbol: str, side: str, strategy: str, 
                         entry_price: float, exit_price: float, size: float,
                         leverage: int, pnl_usd: float, close_reason: str,
@@ -3804,6 +4005,8 @@ class BybitTerminal(QMainWindow):
     
     def _save_auto_settings(self):
         """Сохраняет настройки автоторговли"""
+        if getattr(self, "_ui_state_restoring", False):
+            return
         self.settings.setValue("auto_trading", "true" if self.auto_trading else "false")
         self.settings.setValue("auto_leverage", self.auto_panel.auto_leverage.value())
         self.settings.setValue("auto_risk", self.auto_panel.risk_spin.value())
@@ -3814,6 +4017,8 @@ class BybitTerminal(QMainWindow):
         self.settings.setValue("auto_coins", ",".join(selected))
     
     def _save_multi_settings(self, enabled: bool):
+        if getattr(self, "_ui_state_restoring", False):
+            return
         selected_strategies = self.strategy_panel.get_selected_strategies()
         selected_coins = self.strategy_panel.get_selected_coins()
         self.settings.setValue("multi_enabled", "true" if enabled else "false")
@@ -3824,7 +4029,7 @@ class BybitTerminal(QMainWindow):
     
     def _load_multi_settings(self):
         risk = self.settings.value("multi_risk", 2.0, type=float)
-        leverage = self.settings.value("multi_leverage", 5, type=int)
+        leverage = self.settings.value("multi_leverage", 10, type=int)
         self.strategy_panel.risk_spin.setValue(risk)
         self.strategy_panel.leverage_spin.setValue(leverage)
         
@@ -3878,7 +4083,7 @@ class BybitTerminal(QMainWindow):
     def _load_auto_settings(self):
         """Загружает настройки автоторговли"""
         # Плечо
-        leverage = self.settings.value("auto_leverage", 5, type=int)
+        leverage = self.settings.value("auto_leverage", 10, type=int)
         self.auto_panel.auto_leverage.setValue(leverage)
         
         # Риск
@@ -3906,10 +4111,15 @@ class BybitTerminal(QMainWindow):
         # Если предыдущий воркер ещё работает - пропускаем
         if hasattr(self, 'auto_worker') and self.auto_worker.isRunning():
             return
+
+        force_10x = _as_bool(self.settings.value("strict_force_leverage_10x", "true"), default=True)
+        allow_signal_close = _as_bool(self.settings.value("allow_signal_close", "false"), default=False)
+        selected_leverage = self.auto_panel.auto_leverage.value()
+        leverage_to_use = 10 if force_10x else selected_leverage
         
         # Собираем настройки из UI в главном потоке
         settings = {
-            'leverage': self.auto_panel.auto_leverage.value(),
+            'leverage': leverage_to_use,
             'risk_pct': self.auto_panel.risk_spin.value(),
             'tf': self.auto_panel.tf_combo.currentData() or "1m",
             'selected_coins': [coin for coin, cb in self.auto_panel.coin_checks.items() if cb.isChecked()],
@@ -3917,7 +4127,7 @@ class BybitTerminal(QMainWindow):
             'min_confluence': 3,
             'entry_cooldown_sec': 20 * 60,
             'auto_owned_symbols': list(self._auto_owned_symbols),
-            'close_on_strong_opposite': True,
+            'close_on_strong_opposite': allow_signal_close,
             'opposite_min_confluence': 3,
             'opposite_confirmations': 2,
             'max_spread_pct': 0.12,
@@ -4129,7 +4339,7 @@ class BybitTerminal(QMainWindow):
             coin = symbol.split('/')[0]
             self._log(f"✅ АВТО {'ЛОНГ' if side == 'buy' else 'ШОРТ'} {size} {coin} @ ${price:,.2f}")
             self._log(f"   🧠 SL/TP модель: {sltp_model}")
-            self._log(f"   🛡️ SL: ${sl_price:,.2f} | 🎯 TP: ${tp_price:,.2f}")
+            self._log(f"   🛡️ SL: ${_fmt_price(sl_price)} | 🎯 TP: ${_fmt_price(tp_price)}")
             
             self._auto_owned_symbols.add(symbol)
             if not hasattr(self, '_tracked_positions'):
@@ -4196,7 +4406,8 @@ class BybitTerminal(QMainWindow):
             return
             
         risk_pct = max(0.5, min(float(self.strategy_panel.get_risk_pct()), 5.0))
-        leverage = max(5, min(int(self.strategy_panel.get_leverage()), 10))
+        force_10x = _as_bool(self.settings.value("strict_force_leverage_10x", "true"), default=True)
+        leverage = 10 if force_10x else max(5, min(int(self.strategy_panel.get_leverage()), 10))
         
         # Создаём менеджер если нет
         if not hasattr(self, 'strategy_manager'):
@@ -4379,7 +4590,7 @@ class BybitTerminal(QMainWindow):
             self._log(f"🎯 [{strategy_id}] {direction} {coin} @ ${price:,.2f}")
             self._log(f"   {reason}")
             self._log(f"   🧠 SL/TP модель: {sltp_meta}")
-            self._log(f"   🛡️ SL: ${sl_price:,.2f} | 🎯 TP: ${tp_price:,.2f}")
+            self._log(f"   🛡️ SL: ${_fmt_price(sl_price)} | 🎯 TP: ${_fmt_price(tp_price)}")
             if not hasattr(self, '_tracked_positions'):
                 self._tracked_positions = {}
             self._tracked_positions[symbol] = {
@@ -4569,7 +4780,7 @@ class BybitTerminal(QMainWindow):
             self._log(f"🧠 AI: {signal.action.upper()} | Confidence: {signal.confidence}%")
             self._log(f"   MTF: HTF={analysis.htf_trend} MTF={analysis.mtf_trend} LTF={analysis.ltf_trend}")
             self._log(f"   Bull: {analysis.bull_score} | Bear: {analysis.bear_score}")
-            self._log(f"   Entry: ${signal.entry_price:,.2f} | SL: ${signal.stop_loss:,.2f}")
+            self._log(f"   Entry: ${_fmt_price(signal.entry_price)} | SL: ${_fmt_price(signal.stop_loss)}")
         else:
             self._log("🧠 AI: Ожидание лучшего момента")
             
@@ -4606,12 +4817,20 @@ class BybitTerminal(QMainWindow):
             else:
                 size = round(size, 1)
             
+            sl_price = float(signal.stop_loss)
+            # Жесткий RR 1:2: дистанция TP всегда = 2 * дистанции SL от входа.
+            sl_dist = abs(float(price) - sl_price)
+            if side == "buy":
+                tp_price = float(price) + (sl_dist * 2.0)
+            else:
+                tp_price = float(price) - (sl_dist * 2.0)
+
             sl_tp_ok = self._open_order_strict_sltp(
                 symbol=symbol,
                 side=side,
                 size=size,
-                sl_price=float(signal.stop_loss),
-                tp_price=float(signal.take_profit_2),
+                sl_price=sl_price,
+                tp_price=tp_price,
                 source="Smart AI",
             )
             if not sl_tp_ok:
@@ -4620,7 +4839,7 @@ class BybitTerminal(QMainWindow):
             direction = "ЛОНГ 📈" if side == "buy" else "ШОРТ 📉"
             self._log(f"🧠 Smart AI {direction} {coin} @ ${price:,.2f}")
             self._log(f"   Confidence: {signal.confidence}% | Size: {size}")
-            self._log(f"   🛡️ SL: ${signal.stop_loss:,.2f} | 🎯 TP: ${signal.take_profit_2:,.2f}")
+            self._log(f"   🛡️ SL: ${_fmt_price(sl_price)} | 🎯 TP: ${_fmt_price(tp_price)} | RR 1:2")
 
             if not hasattr(self, '_tracked_positions'):
                 self._tracked_positions = {}
@@ -4632,8 +4851,8 @@ class BybitTerminal(QMainWindow):
                 'strategy': 'SmartAI',
                 'open_reason': f"Smart AI signal ({signal.confidence}% confidence)",
                 'risk_model': 'smart-ai-signal',
-                'sl_price': float(signal.stop_loss),
-                'tp_price': float(signal.take_profit_2),
+                'sl_price': sl_price,
+                'tp_price': tp_price,
                 'sl_tp_on_exchange': True,
                 'timestamp_open': datetime.now().isoformat()
             }

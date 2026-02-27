@@ -11,11 +11,13 @@ from .mean_reversion import MeanReversionStrategy
 from .scalping import ScalpingStrategy
 from .swing import SwingStrategy
 from .adaptive_regime import AdaptiveRegimeStrategy
+from .gold_btc_inverse import GoldBtcInverseStrategy
 
 
 # Р’СЃРµ РґРѕСЃС‚СѓРїРЅС‹Рµ СЃС‚СЂР°С‚РµРіРёРё
 STRATEGIES = {
     "adaptive_regime": AdaptiveRegimeStrategy,
+    "gold_btc_inverse": GoldBtcInverseStrategy,
     "trend_following": TrendFollowingStrategy,
     "breakout": BreakoutStrategy,
     "mean_reversion": MeanReversionStrategy,

@@ -6,6 +6,7 @@ import os
 from datetime import datetime
 from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QBrush
+from core.storage import get_journal_file, migrate_if_missing
 
 COLORS = {
     'bg_card': '#1a1a22',
@@ -52,8 +54,31 @@ def get_strategy_color(strategy: str) -> str:
             return color
     return STRATEGY_COLORS['Unknown']
 
-# Путь к файлу журнала
-JOURNAL_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "trade_journal.json")
+
+def _extract_note_field(notes: str, prefix: str) -> str:
+    notes = str(notes or "")
+    for part in notes.split("|"):
+        chunk = part.strip()
+        if chunk.lower().startswith(prefix.lower()):
+            return chunk.split(":", 1)[1].strip() if ":" in chunk else chunk
+    return ""
+
+
+def get_trade_open_reason(notes: str) -> str:
+    return _extract_note_field(notes, "Причина входа")
+
+
+def get_trade_premises(notes: str) -> str:
+    return _extract_note_field(notes, "Предпосылки/модель")
+
+
+def get_trade_close_details(notes: str) -> str:
+    return _extract_note_field(notes, "Закрытие")
+
+# Путь к файлу журнала (постоянное хранилище вне git-репозитория)
+JOURNAL_FILE = str(get_journal_file())
+_LEGACY_JOURNAL = Path(os.path.dirname(os.path.dirname(__file__))) / "trade_journal.json"
+migrate_if_missing(Path(JOURNAL_FILE), _LEGACY_JOURNAL)
 
 
 @dataclass
@@ -157,6 +182,20 @@ class TradeJournal:
         """Получает список уникальных стратегий"""
         return list(set(t.strategy for t in self.trades))
         
+    def get_close_reason_breakdown(self, strategy: str = None) -> Dict[str, Dict[str, float]]:
+        """Возвращает статистику по причинам закрытия: количество и суммарный PnL."""
+        trades = self.trades
+        if strategy and strategy != "Все":
+            trades = [t for t in trades if t.strategy == strategy]
+        breakdown: Dict[str, Dict[str, float]] = {}
+        for t in trades:
+            reason = str(t.close_reason or "Unknown")
+            if reason not in breakdown:
+                breakdown[reason] = {"count": 0, "pnl": 0.0}
+            breakdown[reason]["count"] += 1
+            breakdown[reason]["pnl"] += float(t.pnl_usd or 0.0)
+        return breakdown
+
     def export_csv(self, filepath: str):
         """Экспортирует в CSV"""
         import csv
@@ -352,13 +391,26 @@ class TradeJournalWidget(QWidget):
         stats_layout.addWidget(self.stat_pf)
         
         layout.addLayout(stats_layout)
+
+        self.reason_summary = QLabel("Причины закрытия: —")
+        self.reason_summary.setWordWrap(True)
+        self.reason_summary.setStyleSheet(
+            f"font-size: 11px; color: {COLORS['text_dim']}; "
+            f"background: {COLORS['bg_card']}; border: 1px solid {COLORS['border']}; "
+            f"border-radius: 8px; padding: 8px 10px;"
+        )
+        layout.addWidget(self.reason_summary)
         
         # === ТАБЛИЦА СДЕЛОК ===
         self.table = QTableWidget()
-        self.table.setColumnCount(12)
+        self.table.setColumnCount(14)
         self.table.setHorizontalHeaderLabels([
             "Дата", "Монета", "Напр.", "Стратегия", "Вход", "Выход",
             "Размер", "Плечо", "PnL $", "PnL %", "Причина", "Длит."
+        ])
+        self.table.setHorizontalHeaderLabels([
+            "Дата", "Монета", "Напр.", "Стратегия", "Вход", "Выход",
+            "Размер", "Плечо", "PnL $", "PnL %", "Причина закрытия", "Причина входа", "Предпосылки", "Длит."
         ])
         self.table.setStyleSheet(f"""
             QTableWidget {{
@@ -384,7 +436,12 @@ class TradeJournalWidget(QWidget):
                 font-size: 11px;
             }}
         """)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        for idx in [0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 13]:
+            self.table.horizontalHeader().setSectionResizeMode(idx, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(11, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(12, QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -435,6 +492,17 @@ class TradeJournalWidget(QWidget):
         pf = stats['profit_factor']
         pf_color = COLORS['green'] if pf >= 1 else COLORS['red']
         self.stat_pf.set_value(f"{pf:.2f}", pf_color)
+
+        breakdown = self.journal.get_close_reason_breakdown(strategy if strategy != "Р’СЃРµ" else None)
+        if breakdown:
+            parts = []
+            for reason, item in sorted(breakdown.items(), key=lambda kv: kv[1]["count"], reverse=True):
+                pnl_val = float(item.get("pnl") or 0.0)
+                pnl_sign = "+" if pnl_val >= 0 else ""
+                parts.append(f"{reason}: {int(item.get('count', 0))} ({pnl_sign}${pnl_val:.2f})")
+            self.reason_summary.setText("Причины закрытия: " + " | ".join(parts))
+        else:
+            self.reason_summary.setText("Причины закрытия: —")
         
         # Таблица
         trades = self.journal.trades
@@ -510,6 +578,18 @@ class TradeJournalWidget(QWidget):
             reason_item = QTableWidgetItem(trade.close_reason)
             reason_item.setBackground(row_bg)
             self.table.setItem(row, 10, reason_item)
+
+            open_reason = get_trade_open_reason(trade.notes) or "—"
+            open_reason_item = QTableWidgetItem(open_reason if len(open_reason) <= 90 else open_reason[:87] + "...")
+            open_reason_item.setBackground(row_bg)
+            open_reason_item.setToolTip(open_reason)
+            self.table.setItem(row, 11, open_reason_item)
+
+            premises = get_trade_premises(trade.notes) or get_trade_close_details(trade.notes) or (trade.notes or "—")
+            premises_item = QTableWidgetItem(premises if len(premises) <= 120 else premises[:117] + "...")
+            premises_item.setBackground(row_bg)
+            premises_item.setToolTip(trade.notes or premises)
+            self.table.setItem(row, 12, premises_item)
             
             # Длительность
             try:
@@ -527,7 +607,7 @@ class TradeJournalWidget(QWidget):
             except:
                 dur_item = QTableWidgetItem("-")
             dur_item.setBackground(row_bg)
-            self.table.setItem(row, 11, dur_item)
+            self.table.setItem(row, 13, dur_item)
                 
     def _export_csv(self):
         """Экспорт в CSV"""
