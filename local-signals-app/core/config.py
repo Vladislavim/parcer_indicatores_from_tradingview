@@ -70,11 +70,11 @@ class Config:
     
     def get_default_leverage(self) -> int:
         """Получить дефолтное плечо"""
-        return self.get("default_leverage", 10)
+        return self.get("default_leverage", 5)
     
     def get_risk_per_trade(self) -> float:
         """Получить риск на сделку в %"""
-        return self.get("risk_per_trade", 2.0)
+        return self.get("risk_per_trade", 0.5)
     
     @staticmethod
     def get_default_config() -> Dict[str, Any]:
@@ -84,8 +84,8 @@ class Config:
             "api_key": "YOUR_BYBIT_DEMO_API_KEY",
             "api_secret": "YOUR_BYBIT_DEMO_SECRET_KEY",
             "demo_mode": True,
-            "default_leverage": 10,
-            "risk_per_trade": 2.0
+            "default_leverage": 5,
+            "risk_per_trade": 0.5
         }
 
 

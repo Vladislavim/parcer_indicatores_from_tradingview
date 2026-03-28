@@ -4,12 +4,43 @@
 from __future__ import annotations
 
 from typing import List, Optional
-from PySide6.QtCore import Qt, QTimer, pyqtSignal
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
-    QWidget, QLabel, QVBoxLayout, QHBoxLayout, 
-    QFrame, QProgressBar, QGraphicsDropShadowEffect
+    QWidget, QLabel, QVBoxLayout, QHBoxLayout,
+    QFrame, QProgressBar, QGraphicsDropShadowEffect,
+    QSpinBox, QDoubleSpinBox
 )
+
+
+class FocusSafeSpinBox(QSpinBox):
+    """SpinBox, который не меняется колесом мыши без явного фокуса."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setKeyboardTracking(False)
+
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+class FocusSafeDoubleSpinBox(QDoubleSpinBox):
+    """DoubleSpinBox, который не меняется колесом мыши без явного фокуса."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setKeyboardTracking(False)
+
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
 
 class AnimatedStatusCard(QFrame):
     """Анимированная карточка статуса с эффектами"""

@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QFrame, QLineEdit, QCheckBox, QSpinBox,
     QDoubleSpinBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QGraphicsDropShadowEffect, QMessageBox, 
-    QScrollArea, QApplication, QComboBox, QGridLayout, QGroupBox, QFileDialog
+    QScrollArea, QApplication, QComboBox, QGridLayout, QGroupBox, QFileDialog,
+    QAbstractSpinBox
 )
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
@@ -32,12 +33,16 @@ except ImportError:
     ccxt = None
 
 from ui.styles import COLORS, get_current_theme
+from ui.widgets import FocusSafeSpinBox, FocusSafeDoubleSpinBox
+from core.bybit_news import BybitAnnouncementFeed
+from core.signal_fusion import build_weighted_signal
 from core.storage import (
     get_data_dir,
     get_equity_file,
     get_runtime_events_file,
     migrate_if_missing,
 )
+from core.trading import build_risk_plan, market_gate_from_ticker
 
 TOP_SYMBOLS = [
     "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", "DOGE/USDT:USDT",
@@ -206,6 +211,29 @@ def _call_set_trading_stop(exchange, symbol: str, stop_loss: float | None = None
     raise RuntimeError(details)
 
 
+def _fetch_balance_safe(exchange):
+    """
+    Tries futures/linear-oriented balance calls first.
+    Helps avoid Bybit demo spot endpoint calls during initialization.
+    """
+    last_err = None
+    attempts = [
+        {"type": "swap"},
+        {"category": "linear"},
+        {"type": "future"},
+        {"accountType": "UNIFIED"},
+        {},
+    ]
+    for params in attempts:
+        try:
+            return exchange.fetch_balance(params)
+        except Exception as e:
+            last_err = e
+    if last_err:
+        raise last_err
+    return exchange.fetch_balance()
+
+
 class AutoTradeWorker(QThread):
     """
     Воркер для автоторговли в отдельном потоке.
@@ -240,6 +268,32 @@ class AutoTradeWorker(QThread):
     @staticmethod
     def _clamp(v: float, low: float, high: float) -> float:
         return max(low, min(high, v))
+
+    @staticmethod
+    def _tp_progress(side: str, entry: float, mark: float, tp: float) -> float:
+        """
+        Прогресс движения к TP в диапазоне [0..1].
+        Нужен для логики раннего выхода по развороту только после
+        достаточного пройденного пути (чтобы не закрывать слишком рано).
+        """
+        try:
+            entry = float(entry)
+            mark = float(mark)
+            tp = float(tp)
+        except Exception:
+            return 0.0
+        if entry <= 0 or mark <= 0 or tp <= 0:
+            return 0.0
+        dist = abs(tp - entry)
+        if dist <= 1e-12:
+            return 0.0
+        if side == "long":
+            moved = mark - entry
+        elif side == "short":
+            moved = entry - mark
+        else:
+            return 0.0
+        return max(0.0, min(1.0, moved / dist))
 
     def _estimate_sl_tp(self, symbol: str, timeframe: str, price: float) -> tuple[float, float, str]:
         """
@@ -327,8 +381,8 @@ class AutoTradeWorker(QThread):
             
         # Тихая проверка — логируем только важное
         
-        leverage = int(self._clamp(float(self.settings['leverage']), 5, 10))
-        risk_pct = float(self._clamp(float(self.settings['risk_pct']), 0.5, 5.0))
+        leverage = int(self._clamp(float(self.settings['leverage']), 3, 7))
+        risk_pct = float(self._clamp(float(self.settings['risk_pct']), 0.25, 1.5))
         tf = self.settings['tf']
         selected_coins = self.settings['selected_coins']
         max_positions = int(self._clamp(float(self.settings.get('max_positions', 0)), 0, 200))
@@ -342,9 +396,10 @@ class AutoTradeWorker(QThread):
         
         # Получаем баланс
         try:
-            balance = self.exchange.fetch_balance()
+            balance = _fetch_balance_safe(self.exchange)
             usdt = balance.get('USDT', {})
             available = float(usdt.get('free') or 0)
+            total_balance = float(usdt.get('total') or usdt.get('equity') or available)
         except Exception as e:
             return  # Тихо пропускаем
         
@@ -376,7 +431,7 @@ class AutoTradeWorker(QThread):
         # === ПРОФИ-РИСК ДВИЖОК ===
         # Ведём контроль просадки по equity и автоматически снижаем/останавливаем риск.
         unrealized = sum(float(p.get('unrealizedPnl') or 0) for p in open_positions)
-        equity_now = max(0.0, available + unrealized)
+        equity_now = max(0.0, total_balance, available + unrealized)
         if self._session_start_equity is None:
             self._session_start_equity = equity_now
             self._session_peak_equity = equity_now
@@ -450,6 +505,8 @@ class AutoTradeWorker(QThread):
         close_on_strong_opposite = bool(self.settings.get("close_on_strong_opposite", True))
         opposite_min_confluence = int(self._clamp(float(self.settings.get("opposite_min_confluence", 3)), 2, 3))
         opposite_confirmations = int(self._clamp(float(self.settings.get("opposite_confirmations", 2)), 1, 3))
+        opposite_min_profit_usd = float(self.settings.get("opposite_close_min_profit_usd", 0.0))
+        opposite_min_tp_progress = float(self._clamp(float(self.settings.get("opposite_close_min_tp_progress", 0.45)), 0.0, 0.95))
         
         for pos in open_positions:
             if self._stop:
@@ -459,6 +516,9 @@ class AutoTradeWorker(QThread):
             pos_side = (pos.get('side') or '').lower()
             pos_size = float(pos.get('contracts') or 0)
             pos_pnl = float(pos.get('unrealizedPnl') or 0)
+            pos_mark = float(pos.get('markPrice') or 0)
+            pos_entry = float(pos.get('entryPrice') or 0)
+            pos_tp = float(pos.get('takeProfit') or 0)
             
             coin_from_pos = pos_symbol.split('/')[0] if '/' in pos_symbol else pos_symbol.replace('USDT', '')
             
@@ -467,6 +527,18 @@ class AutoTradeWorker(QThread):
             if pos_symbol not in auto_owned_symbols:
                 continue
             if not close_on_strong_opposite:
+                continue
+
+            key = f"{pos_symbol}:{pos_side}"
+            # Правило "если уже в минусе — ждём SL/TP, по развороту не закрываем".
+            if pos_pnl <= opposite_min_profit_usd:
+                self._opposite_hits[key] = 0
+                continue
+
+            # Выход по развороту только после существенного движения к TP (например, 45%).
+            tp_progress = self._tp_progress(pos_side, pos_entry, pos_mark, pos_tp)
+            if tp_progress < opposite_min_tp_progress:
+                self._opposite_hits[key] = 0
                 continue
             
             try:
@@ -483,7 +555,6 @@ class AutoTradeWorker(QThread):
                 (pos_side == "long" and signal == "sell" and htf_trend == "bear")
                 or (pos_side == "short" and signal == "buy" and htf_trend == "bull")
             )
-            key = f"{pos_symbol}:{pos_side}"
             if opposite and strength >= opposite_min_confluence:
                 self._opposite_hits[key] = self._opposite_hits.get(key, 0) + 1
             else:
@@ -494,7 +565,7 @@ class AutoTradeWorker(QThread):
                 self._opposite_hits[key] = 0
                 self.log_signal.emit(
                     f"🔄 Закрываю {coin_from_pos} {pos_side.upper()} — сильный противоположный сигнал "
-                    f"({strength}/3, {opposite_confirmations} подтверждения)"
+                    f"({strength}/3, {opposite_confirmations} подтверждения, TP прогресс {tp_progress*100:.0f}%)"
                 )
             
             if should_close:
@@ -593,30 +664,39 @@ class AutoTradeWorker(QThread):
                     )
                     continue
                 
-                position_usdt = available * (risk_pct / 100)
-                max_position_cap = available * 0.30
-                position_usdt = min(position_usdt, max_position_cap)
-                size = (position_usdt * leverage) / price
-                
-                if coin == "BTC":
-                    size = round(size, 3)
-                elif coin in ["ETH", "SOL"]:
-                    size = round(size, 2)
-                else:
-                    size = round(size, 1)
-                    
-                notional_usdt = size * price
-                if size < 0.001 or notional_usdt < 5:
-                    continue
-                
                 # Volatility-adjusted SL/TP with sane bounds
                 sl_pct, tp_pct, sltp_model = self._estimate_sl_tp(symbol, tf, price)
+                if signal == "buy":
+                    stop_price = price * (1 - sl_pct / 100.0)
+                else:
+                    stop_price = price * (1 + sl_pct / 100.0)
+                risk_plan = build_risk_plan(
+                    exchange=self.exchange,
+                    symbol=symbol,
+                    side=signal,
+                    entry_price=price,
+                    stop_price=stop_price,
+                    leverage=leverage,
+                    risk_pct=risk_pct,
+                    available_balance=available,
+                    total_equity=equity_now,
+                    positions=open_positions,
+                    max_margin_pct=0.10,
+                    max_notional_pct=0.18,
+                    max_portfolio_risk_pct=0.0,
+                    max_same_side_alt_positions=0,
+                )
+                if not risk_plan.ok:
+                    self.log_signal.emit(f"⚠️ {coin} пропуск: risk-block ({risk_plan.reason})")
+                    continue
+                size = float(risk_plan.size)
                 
                 direction = "ЛОНГ 📈" if signal == "buy" else "ШОРТ 📉"
                 self.log_signal.emit(f"🔥 КОНФЛЮЕНС {direction} {coin} ({strength}/3) {htf_emoji}HTF")
                 self.log_signal.emit(f"   {details}")
                 self.log_signal.emit(
-                    f"   Размер: {size} | Плечо: {leverage}x | SL {sl_pct:.2f}% / TP {tp_pct:.2f}% | {sltp_model}"
+                    f"   Размер: {size} | Плечо: {leverage}x | SL {sl_pct:.2f}% / TP {tp_pct:.2f}% | "
+                    f"{sltp_model} | risk ${risk_plan.risk_amount_usd:.2f}"
                 )
                 
                 # Отправляем сигнал для открытия в главном потоке
@@ -723,7 +803,7 @@ class ConnectWorker(QThread):
                 exchange.is_unified_enabled = (lambda params={}: [False, True])
             
             # Проверяем подключение
-            exchange.fetch_balance()
+            _fetch_balance_safe(exchange)
             
             self.success.emit(exchange)
             
@@ -744,7 +824,7 @@ class RefreshWorker(QThread):
         
     def run(self):
         try:
-            balance = self.exchange.fetch_balance()
+            balance = _fetch_balance_safe(self.exchange)
             usdt = balance.get('USDT', {})
             
             available = float(usdt.get('free') or 0)
@@ -1276,6 +1356,43 @@ class OrderPanel(QFrame):
         """)
         self.calc_label.setWordWrap(True)
         layout.addWidget(self.calc_label)
+
+        sltp_bar = QHBoxLayout()
+        sltp_bar.setSpacing(12)
+
+        self.sltp_hint_label = QLabel("SL/TP зафиксированы по умолчанию: 2.0% / 4.0%")
+        self.sltp_hint_label.setStyleSheet("""
+            font-size: 11px; color: #888;
+            background: transparent;
+        """)
+        self.sltp_hint_label.setWordWrap(True)
+        sltp_bar.addWidget(self.sltp_hint_label, 1)
+
+        self.edit_sltp_check = QCheckBox("Редактировать проценты")
+        self.edit_sltp_check.setChecked(False)
+        self.edit_sltp_check.setCursor(Qt.PointingHandCursor)
+        self.edit_sltp_check.setToolTip("По умолчанию проценты заблокированы, чтобы не менять их случайно.")
+        self.edit_sltp_check.setStyleSheet("""
+            QCheckBox {
+                color: white;
+                font-size: 12px;
+                spacing: 6px;
+                background: transparent;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 4px;
+                border: 2px solid #444;
+                background: #1a1a22;
+            }
+            QCheckBox::indicator:checked {
+                background: #6C5CE7;
+                border-color: #6C5CE7;
+            }
+        """)
+        sltp_bar.addWidget(self.edit_sltp_check)
+        layout.addLayout(sltp_bar)
         
         # SL и TP
         row2 = QHBoxLayout()
@@ -1283,6 +1400,8 @@ class OrderPanel(QFrame):
         row2.addWidget(self._create_field_group("Stop Loss", self._create_sl_spin()))
         row2.addWidget(self._create_field_group("Take Profit", self._create_tp_spin()))
         layout.addLayout(row2)
+        self.edit_sltp_check.toggled.connect(self._set_manual_sltp_editable)
+        self._set_manual_sltp_editable(False)
         
         # Buttons
         layout.addSpacing(8)
@@ -1343,6 +1462,22 @@ class OrderPanel(QFrame):
         vbox.addWidget(widget)
         
         return container
+
+    def _set_manual_sltp_editable(self, editable: bool):
+        for spin in (self.sl_spin, self.tp_spin):
+            spin.setReadOnly(not editable)
+            spin.setFocusPolicy(Qt.StrongFocus if editable else Qt.NoFocus)
+            spin.setButtonSymbols(
+                QAbstractSpinBox.UpDownArrows if editable else QAbstractSpinBox.NoButtons
+            )
+            if not editable:
+                spin.clearFocus()
+        if editable:
+            self.sltp_hint_label.setText("Ручное редактирование SL/TP включено")
+        else:
+            self.sltp_hint_label.setText(
+                f"SL/TP зафиксированы по умолчанию: {self.sl_spin.value():.1f}% / {self.tp_spin.value():.1f}%"
+            )
         
     def _create_combo(self) -> QComboBox:
         self.symbol_combo = QComboBox()
@@ -1379,13 +1514,14 @@ class OrderPanel(QFrame):
         
     def _create_position_spin(self) -> QDoubleSpinBox:
         """Размер позиции в USDT (как на Bybit)"""
-        self.position_input = QDoubleSpinBox()
+        self.position_input = FocusSafeDoubleSpinBox()
         self.position_input.setFixedHeight(50)
         self.position_input.setRange(10, 1000000)
         self.position_input.setValue(1000)
         self.position_input.setDecimals(0)
         self.position_input.setSingleStep(100)
         self.position_input.setPrefix("$")
+        self.position_input.setToolTip("Колесо мыши отключено, пока поле не в фокусе.")
         self.position_input.setStyleSheet("""
             QDoubleSpinBox {
                 background: #2a2a35;
@@ -1405,11 +1541,12 @@ class OrderPanel(QFrame):
         return self.position_input
         
     def _create_leverage_spin(self) -> QSpinBox:
-        self.leverage_spin = QSpinBox()
+        self.leverage_spin = FocusSafeSpinBox()
         self.leverage_spin.setFixedHeight(50)
         self.leverage_spin.setRange(1, 100)
         self.leverage_spin.setValue(10)
         self.leverage_spin.setSuffix("x")
+        self.leverage_spin.setToolTip("Колесо мыши отключено, пока поле не в фокусе.")
         self.leverage_spin.setStyleSheet("""
             QSpinBox {
                 background: #2a2a35;
@@ -1429,12 +1566,13 @@ class OrderPanel(QFrame):
         return self.leverage_spin
         
     def _create_sl_spin(self) -> QDoubleSpinBox:
-        self.sl_spin = QDoubleSpinBox()
+        self.sl_spin = FocusSafeDoubleSpinBox()
         self.sl_spin.setFixedHeight(50)
         self.sl_spin.setRange(0.5, 50)
         self.sl_spin.setValue(2.0)
         self.sl_spin.setDecimals(1)
         self.sl_spin.setSuffix("%")
+        self.sl_spin.setToolTip("Проценты заблокированы по умолчанию. Включите редактирование, если нужно изменить.")
         self.sl_spin.setStyleSheet("""
             QDoubleSpinBox {
                 background: #2a2a35;
@@ -1453,12 +1591,13 @@ class OrderPanel(QFrame):
         return self.sl_spin
         
     def _create_tp_spin(self) -> QDoubleSpinBox:
-        self.tp_spin = QDoubleSpinBox()
+        self.tp_spin = FocusSafeDoubleSpinBox()
         self.tp_spin.setFixedHeight(50)
         self.tp_spin.setRange(0.5, 100)
         self.tp_spin.setValue(4.0)
         self.tp_spin.setDecimals(1)
         self.tp_spin.setSuffix("%")
+        self.tp_spin.setToolTip("Проценты заблокированы по умолчанию. Включите редактирование, если нужно изменить.")
         self.tp_spin.setStyleSheet("""
             QDoubleSpinBox {
                 background: #2a2a35;
@@ -1670,11 +1809,12 @@ class AutoTradePanel(QFrame):
         return self.tf_combo
         
     def _create_leverage_spin(self) -> QSpinBox:
-        self.auto_leverage = QSpinBox()
+        self.auto_leverage = FocusSafeSpinBox()
         self.auto_leverage.setFixedHeight(46)
-        self.auto_leverage.setRange(5, 10)
-        self.auto_leverage.setValue(10)
+        self.auto_leverage.setRange(3, 5)
+        self.auto_leverage.setValue(5)
         self.auto_leverage.setSuffix("x")
+        self.auto_leverage.setToolTip("Колесо мыши отключено, пока поле не в фокусе.")
         self.auto_leverage.setStyleSheet("""
             QSpinBox {
                 background: #2a2a35;
@@ -1694,13 +1834,15 @@ class AutoTradePanel(QFrame):
         return self.auto_leverage
         
     def _create_risk_spin(self) -> QDoubleSpinBox:
-        self.risk_spin = QDoubleSpinBox()
+        self.risk_spin = FocusSafeDoubleSpinBox()
         self.risk_spin.setFixedHeight(46)
-        self.risk_spin.setRange(0.5, 5.0)
-        self.risk_spin.setValue(2.0)
-        self.risk_spin.setDecimals(1)
-        self.risk_spin.setSingleStep(0.5)
+        self.risk_spin.setRange(0.25, 1.5)
+        self.risk_spin.setValue(0.5)
+        self.risk_spin.setDecimals(2)
+        self.risk_spin.setSingleStep(0.25)
         self.risk_spin.setSuffix("%")
+        self.risk_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.risk_spin.setToolTip("Колесо мыши отключено. Значение меняется только после фокуса.")
         self.risk_spin.setStyleSheet("""
             QDoubleSpinBox {
                 background: #2a2a35;
@@ -1857,6 +1999,7 @@ class BybitTerminal(QMainWindow):
         self._signal_cache_ttl_sec = 10.0
         self._htf_cache_ttl_sec = 20.0
         self._cache_lock = threading.Lock()
+        self._bybit_news_feed = BybitAnnouncementFeed(ttl_sec=300, pages=2)
         self._auto_tf_cached = "1h"
         self._event_buffer: List[str] = []
         self._equity_buffer: List[list] = []
@@ -2087,7 +2230,7 @@ class BybitTerminal(QMainWindow):
             }}
         """)
         self.positions_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.positions_scroll.setMinimumHeight(260)
+        self.positions_scroll.setMinimumHeight(420)
         
         self.positions_widget = QWidget()
         self.positions_inner_layout = QVBoxLayout(self.positions_widget)
@@ -2101,11 +2244,11 @@ class BybitTerminal(QMainWindow):
         self.positions_inner_layout.addStretch()
         
         self.positions_scroll.setWidget(self.positions_widget)
-        positions_layout.addWidget(self.positions_scroll, 2)
-        
-        # Trade history (последние сделки)
+        positions_layout.addWidget(self.positions_scroll, 1)
+
+        # Trade history остаётся как источник данных, но не отображается во вкладке "Позиции"
         self.history_table = TradeHistoryTable()
-        positions_layout.addWidget(self.history_table, 1)
+        self.history_table.setVisible(False)
         
         self.right_tabs.addTab(positions_tab, "📈 Позиции")
         
@@ -2268,7 +2411,7 @@ class BybitTerminal(QMainWindow):
         """)
         export_btn.clicked.connect(self._export_runtime_data)
         layout.addWidget(export_btn)
-        
+
         # Help button
         help_btn = QPushButton("?")
         help_btn.setFixedSize(28, 28)
@@ -2287,7 +2430,7 @@ class BybitTerminal(QMainWindow):
         layout.addWidget(help_btn)
         
         return header
-        
+
     def _set_logo(self, pixmap):
         if pixmap:
             self.logo_lbl.setPixmap(pixmap)
@@ -2995,6 +3138,28 @@ class BybitTerminal(QMainWindow):
             f"Риск-контроль: локальная защита SL/TP для {local_protected} поз."
         )
 
+    @staticmethod
+    def _calc_tp_progress_ratio(side: str, entry: float, mark: float, tp: float) -> float:
+        """Возвращает прогресс к TP в диапазоне [0..1]."""
+        try:
+            entry = float(entry)
+            mark = float(mark)
+            tp = float(tp)
+        except Exception:
+            return 0.0
+        if entry <= 0 or mark <= 0 or tp <= 0:
+            return 0.0
+        distance = abs(tp - entry)
+        if distance <= 1e-12:
+            return 0.0
+        if side == "long":
+            moved = mark - entry
+        elif side == "short":
+            moved = entry - mark
+        else:
+            return 0.0
+        return max(0.0, min(1.0, moved / distance))
+
     def _close_position_by_rules(
         self,
         pos: dict,
@@ -3108,9 +3273,11 @@ class BybitTerminal(QMainWindow):
         tf = "1h"
         if hasattr(self, 'auto_panel') and self.auto_panel:
             tf = self.auto_panel.tf_combo.currentData() or "1h"
-        allow_signal_close = _as_bool(self.settings.value("allow_signal_close", "false"), default=False)
+        allow_signal_close = _as_bool(self.settings.value("allow_signal_close", "true"), default=True)
         opposite_min_confluence = 3
         opposite_confirmations = 2
+        opposite_min_profit_usd = float(self.settings.value("signal_close_min_profit_usd", 0.0, type=float))
+        opposite_min_tp_progress = float(self.settings.value("signal_close_min_tp_progress", 0.45, type=float))
         now_ts = time.time()
         signal_scan_due = (now_ts - float(self._last_exit_signal_scan_ts or 0.0)) >= self._exit_signal_scan_interval_sec
         signal_checked = 0
@@ -3156,6 +3323,22 @@ class BybitTerminal(QMainWindow):
                     ):
                         continue
 
+            news_bias = self._get_news_bias(symbol)
+            if news_bias and news_bias.flatten_now:
+                if self._close_position_by_rules(
+                    pos,
+                    close_reason="News",
+                    notes=f"Bybit delisting safety exit: {news_bias.reason}",
+                ):
+                    continue
+            if news_bias and news_bias.active and side == "long":
+                if self._close_position_by_rules(
+                    pos,
+                    close_reason="News",
+                    notes=f"Long position closed against official delisting notice: {news_bias.reason}",
+                ):
+                    continue
+
             # Сильный обратный сигнал — считаем реже, чтобы не грузить UI/индикаторы.
             if not allow_signal_close:
                 continue
@@ -3163,6 +3346,15 @@ class BybitTerminal(QMainWindow):
                 continue
             if signal_checked >= signal_limit:
                 continue
+            # Новое правило: разворотом закрываем только если сделка уже в плюсе
+            # и прошла существенную часть пути к TP.
+            pnl_usd = float(pos.get('unrealizedPnl') or 0)
+            tp_progress = self._calc_tp_progress_ratio(side, float(pos.get('entryPrice') or 0), mark, tp_price)
+            hit_key = f"{symbol}:{side}"
+            if pnl_usd <= opposite_min_profit_usd or tp_progress < opposite_min_tp_progress:
+                self._global_opposite_hits[hit_key] = 0
+                continue
+
             signal_checked += 1
             coin = self._symbol_key(symbol) or symbol.split('/')[0]
             try:
@@ -3178,7 +3370,6 @@ class BybitTerminal(QMainWindow):
                 (side == "long" and signal == "sell" and htf_trend == "bear")
                 or (side == "short" and signal == "buy" and htf_trend == "bull")
             )
-            hit_key = f"{symbol}:{side}"
             if opposite and int(strength) >= opposite_min_confluence:
                 self._global_opposite_hits[hit_key] = self._global_opposite_hits.get(hit_key, 0) + 1
             else:
@@ -3191,7 +3382,7 @@ class BybitTerminal(QMainWindow):
                     close_reason="Signal",
                     notes=(
                         f"Сильный противоположный сигнал ({strength}/3, {opposite_confirmations} подтверждения). "
-                        f"HTF={htf_trend}. {details}"
+                        f"HTF={htf_trend}. Прогресс к TP {tp_progress*100:.0f}%. {details}"
                     ),
                 )
         if signal_scan_due:
@@ -3575,6 +3766,66 @@ class BybitTerminal(QMainWindow):
         except Exception:
             pass
         return keys
+
+    def _get_balance_snapshot(self) -> tuple[float, float]:
+        if not self.exchange:
+            return 0.0, 0.0
+        try:
+            balance = _fetch_balance_safe(self.exchange)
+            usdt = balance.get("USDT", {})
+            available = float(usdt.get("free") or 0)
+            total = float(usdt.get("total") or usdt.get("equity") or available)
+            return available, total
+        except Exception:
+            return 0.0, 0.0
+
+    def _get_news_bias(self, symbol_or_coin: str):
+        coin = self._symbol_key(symbol_or_coin) or str(symbol_or_coin or "").upper().strip()
+        if not coin:
+            return None
+        try:
+            return self._bybit_news_feed.get_symbol_bias(coin)
+        except Exception:
+            return None
+
+    def _build_execution_risk_plan(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        stop_price: float,
+        leverage: int,
+        requested_risk_pct: float,
+    ):
+        if not self.exchange:
+            return None
+        available, total = self._get_balance_snapshot()
+        if available <= 0 or total <= 0:
+            return None
+        try:
+            positions = self.exchange.fetch_positions()
+            open_positions = [p for p in positions if float(p.get("contracts") or 0) > 0]
+        except Exception:
+            open_positions = []
+        tracked = getattr(self, "_tracked_positions", {})
+        return build_risk_plan(
+            exchange=self.exchange,
+            symbol=symbol,
+            side=side,
+            entry_price=float(entry_price),
+            stop_price=float(stop_price),
+            leverage=int(leverage),
+            risk_pct=float(requested_risk_pct),
+            available_balance=available,
+            total_equity=total,
+            positions=open_positions,
+            tracked_positions=tracked,
+            max_margin_pct=0.10,
+            max_notional_pct=0.18,
+            max_portfolio_risk_pct=0.0,
+            max_same_side_alt_positions=0,
+        )
 
     def _normalize_strategy_lockset(self, strategy_id: str) -> set:
         raw = self._strategy_symbol_locks.setdefault(strategy_id, set())
@@ -4028,8 +4279,8 @@ class BybitTerminal(QMainWindow):
         self.settings.setValue("multi_leverage", int(self.strategy_panel.get_leverage()))
     
     def _load_multi_settings(self):
-        risk = self.settings.value("multi_risk", 2.0, type=float)
-        leverage = self.settings.value("multi_leverage", 10, type=int)
+        risk = self.settings.value("multi_risk", 0.5, type=float)
+        leverage = self.settings.value("multi_leverage", 5, type=int)
         self.strategy_panel.risk_spin.setValue(risk)
         self.strategy_panel.leverage_spin.setValue(leverage)
         
@@ -4083,11 +4334,11 @@ class BybitTerminal(QMainWindow):
     def _load_auto_settings(self):
         """Загружает настройки автоторговли"""
         # Плечо
-        leverage = self.settings.value("auto_leverage", 10, type=int)
+        leverage = self.settings.value("auto_leverage", 5, type=int)
         self.auto_panel.auto_leverage.setValue(leverage)
         
         # Риск
-        risk = self.settings.value("auto_risk", 2.0, type=float)
+        risk = self.settings.value("auto_risk", 0.5, type=float)
         self.auto_panel.risk_spin.setValue(risk)
         
         # Таймфрейм
@@ -4112,10 +4363,10 @@ class BybitTerminal(QMainWindow):
         if hasattr(self, 'auto_worker') and self.auto_worker.isRunning():
             return
 
-        force_10x = _as_bool(self.settings.value("strict_force_leverage_10x", "true"), default=True)
-        allow_signal_close = _as_bool(self.settings.value("allow_signal_close", "false"), default=False)
+        force_10x = _as_bool(self.settings.value("strict_force_leverage_10x", "false"), default=False)
+        allow_signal_close = _as_bool(self.settings.value("allow_signal_close", "true"), default=True)
         selected_leverage = self.auto_panel.auto_leverage.value()
-        leverage_to_use = 10 if force_10x else selected_leverage
+        leverage_to_use = 5 if force_10x else min(selected_leverage, 5)
         
         # Собираем настройки из UI в главном потоке
         settings = {
@@ -4125,16 +4376,18 @@ class BybitTerminal(QMainWindow):
             'selected_coins': [coin for coin, cb in self.auto_panel.coin_checks.items() if cb.isChecked()],
             'max_positions': 0,
             'min_confluence': 3,
-            'entry_cooldown_sec': 20 * 60,
+            'entry_cooldown_sec': 45 * 60,
             'auto_owned_symbols': list(self._auto_owned_symbols),
             'close_on_strong_opposite': allow_signal_close,
             'opposite_min_confluence': 3,
             'opposite_confirmations': 2,
-            'max_spread_pct': 0.12,
-            'min_quote_volume': 3_000_000,
-            'max_drawdown_pct': 6.0,
-            'hard_stop_pct': 10.0,
-            'risk_pause_minutes': 60,
+            'opposite_close_min_profit_usd': 0.0,
+            'opposite_close_min_tp_progress': 0.45,
+            'max_spread_pct': 0.10,
+            'min_quote_volume': 8_000_000,
+            'max_drawdown_pct': 4.0,
+            'hard_stop_pct': 6.0,
+            'risk_pause_minutes': 180,
         }
         self._auto_tf_cached = settings['tf']
             
@@ -4214,61 +4467,23 @@ class BybitTerminal(QMainWindow):
         if cached and (now - cached[0]) < self._signal_cache_ttl_sec:
             return cached[1]
 
+        symbol = f"{coin}/USDT:USDT"
         try:
-            from indicators.boswaves_ema_market_structure import get_signal as ema_get_signal
-            from indicators.algoalpha_smart_money_breakout import get_signal as sm_get_signal
-            from indicators.algoalpha_trend_targets import get_signal as tt_get_signal
-        except ImportError:
-            return "none", 0, "Индикаторы не найдены"
-            
-        symbol = f"{coin}USDT.P"
-        
-        results = {}
-        
-        # EMA Market Structure
+            htf_trend = self._get_htf_trend(coin, tf)
+        except Exception:
+            htf_trend = "neutral"
+        news_bias = self._get_news_bias(coin)
         try:
-            res = ema_get_signal(symbol, tf, source)
-            if isinstance(res, (list, tuple)) and len(res) >= 1:
-                results["EMA"] = str(res[0])
-            else:
-                results["EMA"] = "neutral"
-        except:
-            results["EMA"] = "neutral"
-            
-        # Smart Money Breakout
-        try:
-            res = sm_get_signal(symbol, tf, source)
-            if isinstance(res, (list, tuple)) and len(res) >= 1:
-                results["SM"] = str(res[0])
-            else:
-                results["SM"] = "neutral"
-        except:
-            results["SM"] = "neutral"
-            
-        # Trend Targets
-        try:
-            res = tt_get_signal(symbol, tf, source)
-            if isinstance(res, (list, tuple)) and len(res) >= 1:
-                results["Trend"] = str(res[0])
-            else:
-                results["Trend"] = "neutral"
-        except:
-            results["Trend"] = "neutral"
-            
-        # Считаем конфлюенс
-        bulls = sum(1 for v in results.values() if v == "bull")
-        bears = sum(1 for v in results.values() if v == "bear")
-        
-        # Формируем детали
-        emoji_map = {"bull": "🟢", "bear": "🔴", "neutral": "⚪"}
-        details = " | ".join([f"{emoji_map.get(v, '⚪')}{k}" for k, v in results.items()])
-        
-        if bulls >= 2 and bulls > bears:
-            out = ("buy", bulls, details)
-        elif bears >= 2 and bears > bulls:
-            out = ("sell", bears, details)
-        else:
-            out = ("none", 0, details)
+            out_signal, out_strength, out_details, _ = build_weighted_signal(
+                self.exchange,
+                symbol,
+                tf,
+                htf_trend=htf_trend,
+                news_bias=news_bias,
+            )
+            out = (out_signal, out_strength, out_details)
+        except Exception as exc:
+            out = ("none", 0, f"fusion error: {exc}")
 
         with self._cache_lock:
             self._signal_cache[cache_key] = (now, out)
@@ -4305,6 +4520,19 @@ class BybitTerminal(QMainWindow):
             # Получаем цену
             ticker = self.exchange.fetch_ticker(symbol)
             price = ticker['last']
+            gate = market_gate_from_ticker(
+                ticker,
+                max_spread_pct=0.10,
+                min_quote_volume=5_000_000,
+            )
+            if not gate.ok:
+                raise RuntimeError(f"авто-вход отклонён: {gate.reason}")
+
+            news_bias = self._get_news_bias(symbol)
+            if news_bias and news_bias.hard_block:
+                raise RuntimeError(f"авто-вход отклонён news-block: {news_bias.reason}")
+            if news_bias and news_bias.active and side == "buy":
+                raise RuntimeError("авто-лонг запрещён из-за official Bybit delisting notice")
             
             # Профессиональный пересчёт SL/TP (адаптация к волатильности/тренду)
             requested_sl_pct = float(sl_pct)
@@ -4324,6 +4552,25 @@ class BybitTerminal(QMainWindow):
                 tp_price=float(requested_tp_price),
                 timeframe=strategy_tf,
             )
+            requested_risk_pct = 0.5
+            if hasattr(self, "auto_panel") and self.auto_panel:
+                try:
+                    requested_risk_pct = float(self.auto_panel.risk_spin.value())
+                except Exception:
+                    requested_risk_pct = 0.5
+            risk_plan = self._build_execution_risk_plan(
+                symbol=symbol,
+                side=side,
+                entry_price=float(price),
+                stop_price=float(sl_price),
+                leverage=int(leverage),
+                requested_risk_pct=requested_risk_pct,
+            )
+            if not risk_plan or not risk_plan.ok:
+                raise RuntimeError(
+                    f"авто-вход отклонён risk-block: {getattr(risk_plan, 'reason', 'no risk plan')}"
+                )
+            size = float(risk_plan.size)
             
             sl_tp_set = self._open_order_strict_sltp(
                 symbol=symbol,
@@ -4340,6 +4587,15 @@ class BybitTerminal(QMainWindow):
             self._log(f"✅ АВТО {'ЛОНГ' if side == 'buy' else 'ШОРТ'} {size} {coin} @ ${price:,.2f}")
             self._log(f"   🧠 SL/TP модель: {sltp_model}")
             self._log(f"   🛡️ SL: ${_fmt_price(sl_price)} | 🎯 TP: ${_fmt_price(tp_price)}")
+            open_risk_msg = (
+                f"Open risk: ${risk_plan.open_risk_usd:.2f}/${risk_plan.portfolio_risk_limit_usd:.2f}"
+                if getattr(risk_plan, "portfolio_risk_limit_usd", 0.0) > 0
+                else f"Open risk: ${risk_plan.open_risk_usd:.2f} | portfolio cap off"
+            )
+            self._log(
+                f"   💼 Risk: ${risk_plan.risk_amount_usd:.2f} | Margin: ${risk_plan.margin_usd:.2f} | "
+                f"{open_risk_msg}"
+            )
             
             self._auto_owned_symbols.add(symbol)
             if not hasattr(self, '_tracked_positions'):
@@ -4405,9 +4661,9 @@ class BybitTerminal(QMainWindow):
             self._log("⚠️ Выберите хотя бы одну монету")
             return
             
-        risk_pct = max(0.5, min(float(self.strategy_panel.get_risk_pct()), 5.0))
-        force_10x = _as_bool(self.settings.value("strict_force_leverage_10x", "true"), default=True)
-        leverage = 10 if force_10x else max(5, min(int(self.strategy_panel.get_leverage()), 10))
+        risk_pct = max(0.25, min(float(self.strategy_panel.get_risk_pct()), 1.5))
+        force_10x = _as_bool(self.settings.value("strict_force_leverage_10x", "false"), default=False)
+        leverage = 5 if force_10x else max(3, min(int(self.strategy_panel.get_leverage()), 5))
         
         # Создаём менеджер если нет
         if not hasattr(self, 'strategy_manager'):
@@ -4508,6 +4764,19 @@ class BybitTerminal(QMainWindow):
                 return
             
         config = self.strategy_manager.active_strategies[strategy_id]
+
+        tracked_positions = dict(getattr(self, "_tracked_positions", {}))
+        try:
+            positions = self.exchange.fetch_positions()
+            open_positions = [p for p in positions if float(p.get("contracts") or 0) > 0]
+        except Exception:
+            open_positions = []
+        if open_positions:
+            try:
+                self._sync_protective_stops(open_positions)
+                tracked_positions = dict(getattr(self, "_tracked_positions", {}))
+            except Exception as e:
+                self._log(f"⚠️ Не удалось подготовить защиту открытых позиций: {e}")
         
         # Создаём воркер
         from strategies.manager import StrategyWorker
@@ -4517,7 +4786,8 @@ class BybitTerminal(QMainWindow):
             strategy_id,
             config['coins'],
             config['risk_pct'],
-            config['leverage']
+            config['leverage'],
+            tracked_positions=tracked_positions,
         )
         worker.log_signal.connect(self._on_strategy_log)
         worker.trade_signal.connect(self._on_strategy_trade)
@@ -4545,27 +4815,29 @@ class BybitTerminal(QMainWindow):
             coin = key or symbol.split('/')[0]
             self._ensure_bybit_unified_workaround()
 
-            # Не доливаем существующую позицию по символу: Bybit объединяет входы в одну строку.
-            open_keys = self._get_open_position_keys()
-            if key and key in open_keys:
-                self._log(
-                    f"⏭️ [{strategy_id}] Пропуск {coin}: по монете уже есть открытая позиция "
-                    f"(доливка отключена, чтобы не раздувать объем)"
-                )
-                return
-
-            lockset = self._normalize_strategy_lockset(strategy_id)
-            if key and key in lockset:
-                self._log(f"⏭️ [{strategy_id}] Пропуск {coin}: у стратегии уже есть активная сделка")
-                return
-
             self._set_leverage_safe(leverage, symbol)
             ticker = self.exchange.fetch_ticker(symbol)
             price = ticker['last']
+            gate = market_gate_from_ticker(
+                ticker,
+                max_spread_pct=0.10,
+                min_quote_volume=5_000_000,
+            )
+            if not gate.ok:
+                raise RuntimeError(f"вход стратегии отклонён: {gate.reason}")
+
+            news_bias = self._get_news_bias(symbol)
+            if news_bias and news_bias.hard_block:
+                raise RuntimeError(f"вход стратегии отклонён news-block: {news_bias.reason}")
+            if news_bias and news_bias.active and side == "buy":
+                raise RuntimeError("лонг стратегии запрещён из-за official Bybit delisting notice")
+
             strategy_tf = "1h"
+            requested_risk_pct = 0.5
             if hasattr(self, "strategy_manager") and self.strategy_manager:
                 cfg = self.strategy_manager.active_strategies.get(strategy_id, {})
                 strategy_tf = str(cfg.get("timeframe") or "1h")
+                requested_risk_pct = float(cfg.get("risk_pct") or 0.5)
             sl_price, tp_price, sltp_meta = self._refine_sl_tp_prices(
                 symbol=symbol,
                 side=side,
@@ -4574,6 +4846,19 @@ class BybitTerminal(QMainWindow):
                 tp_price=float(tp_price or 0),
                 timeframe=strategy_tf,
             )
+            risk_plan = self._build_execution_risk_plan(
+                symbol=symbol,
+                side=side,
+                entry_price=float(price),
+                stop_price=float(sl_price),
+                leverage=int(leverage),
+                requested_risk_pct=requested_risk_pct,
+            )
+            if not risk_plan or not risk_plan.ok:
+                raise RuntimeError(
+                    f"вход стратегии отклонён risk-block: {getattr(risk_plan, 'reason', 'no risk plan')}"
+                )
+            size = float(risk_plan.size)
 
             sl_tp_ok = self._open_order_strict_sltp(
                 symbol=symbol,
@@ -4591,6 +4876,15 @@ class BybitTerminal(QMainWindow):
             self._log(f"   {reason}")
             self._log(f"   🧠 SL/TP модель: {sltp_meta}")
             self._log(f"   🛡️ SL: ${_fmt_price(sl_price)} | 🎯 TP: ${_fmt_price(tp_price)}")
+            open_risk_msg = (
+                f"Open risk: ${risk_plan.open_risk_usd:.2f}/${risk_plan.portfolio_risk_limit_usd:.2f}"
+                if getattr(risk_plan, "portfolio_risk_limit_usd", 0.0) > 0
+                else f"Open risk: ${risk_plan.open_risk_usd:.2f} | portfolio cap off"
+            )
+            self._log(
+                f"   💼 Risk: ${risk_plan.risk_amount_usd:.2f} | Margin: ${risk_plan.margin_usd:.2f} | "
+                f"{open_risk_msg}"
+            )
             if not hasattr(self, '_tracked_positions'):
                 self._tracked_positions = {}
             self._tracked_positions[symbol] = {
@@ -4606,8 +4900,6 @@ class BybitTerminal(QMainWindow):
                 'sl_tp_on_exchange': True,
                 'timestamp_open': datetime.now().isoformat()
             }
-            if key:
-                lockset.add(key)
             self.history_table.add_trade(
                 datetime.now().strftime("%H:%M:%S"),
                 coin,
@@ -4800,7 +5092,7 @@ class BybitTerminal(QMainWindow):
             self._set_leverage_safe(leverage, symbol)
             
             # Получаем баланс
-            balance = self.exchange.fetch_balance()
+            balance = _fetch_balance_safe(self.exchange)
             available = float(balance.get('USDT', {}).get('free') or 0)
             
             # Размер позиции

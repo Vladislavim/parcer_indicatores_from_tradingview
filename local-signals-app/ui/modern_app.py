@@ -486,7 +486,7 @@ class IndicatorBadge(QFrame):
         self.names = {
             "ema_ms": "EMA",
             "smart_money": "SM",
-            "trend_targets": "Тренд"
+            "confirmations": "CONF"
         }
         
         self.setFixedHeight(26)
@@ -602,7 +602,7 @@ class SignalCard(QFrame):
         badges_layout.setSpacing(6)
         
         self.badges = {}
-        for key in ["ema_ms", "smart_money", "trend_targets"]:
+        for key in ["ema_ms", "smart_money", "confirmations"]:
             badge = IndicatorBadge(key)
             self.badges[key] = badge
             badges_layout.addWidget(badge)
@@ -710,8 +710,8 @@ class SignalCard(QFrame):
         indicator = "ema_ms"
         if "SM" in detail:
             indicator = "smart_money"
-        elif "Тренд" in detail:
-            indicator = "trend_targets"
+        elif "CONF" in detail or "Confirm" in detail:
+            indicator = "confirmations"
         self.update_indicator(indicator, status, detail)
 
 
@@ -1373,7 +1373,7 @@ class MainWindow(QMainWindow):
             "timeframe": self.tf.currentData(),
             "symbols": MONITOR_SYMBOLS,
             "alert_symbols": selected,
-            "indicators": ["ema_ms", "smart_money", "trend_targets"],
+            "indicators": ["ema_ms", "smart_money", "confirmations"],
             "tg_token": self.tg_token.text().strip(),
             "tg_chat": self.tg_chat.text().strip(),
             "tg_thread": THREAD_ID_DEV,

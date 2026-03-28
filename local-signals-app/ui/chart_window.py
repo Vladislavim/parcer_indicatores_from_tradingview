@@ -410,7 +410,7 @@ class ChartWindow(QMainWindow):
         indicator_specs = [
             ("ema_ms", "EMA Market Structure", "EMA тренд анализ"),
             ("smart_money", "Smart Money", "BOS/CHoCH сигналы"),
-            ("trend_targets", "Trend Targets", "Supertrend анализ"),
+            ("confirmations", "Confirmations", "AlphaTrend / QQE / ZeroLag stack"),
         ]
         
         for key, name, description in indicator_specs:
@@ -444,7 +444,7 @@ class ChartWindow(QMainWindow):
         details = {
             "ema_ms": ["EMA trend up", "EMA trend down", "EMA sideways"],
             "smart_money": ["BOS breakout up", "BOS breakout down", "Waiting for signal"],
-            "trend_targets": ["Uptrend active", "Downtrend active", "Sideways movement"]
+            "confirmations": ["Confirmations bull", "Confirmations bear", "Mixed confirmations"]
         }
         
         for key, card in self.indicators.items():

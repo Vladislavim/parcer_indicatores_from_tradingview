@@ -20,8 +20,8 @@ def _stub_sm(symbol: str, timeframe: str, source: str):
     return "neutral", "Smart Money (демо режим)"
 
 
-def _stub_tt(symbol: str, timeframe: str, source: str):
-    return "neutral", "Trend (демо режим)"
+def _stub_cf(symbol: str, timeframe: str, source: str):
+    return "neutral", "Confirmations (демо режим)"
 
 
 try:
@@ -39,11 +39,11 @@ except Exception:
     sm_get_signal = _stub_sm  # type: ignore
 
 try:
-    from indicators.algoalpha_trend_targets import (  # type: ignore
-        get_signal as tt_get_signal,
+    from indicators.confirmation_stack import (  # type: ignore
+        get_signal as cf_get_signal,
     )
 except Exception:
-    tt_get_signal = _stub_tt  # type: ignore
+    cf_get_signal = _stub_cf  # type: ignore
 
 
 # ====== HTF (Higher Timeframe) маппинг ======
@@ -244,16 +244,16 @@ class Worker(QThread):
             self.log.emit(f"[{symbol}] SmartMoney error: {e}")
             return IndicatorState(status="na", detail="SmartMoney error", raw={"error": str(e)})
 
-    def _calc_trend_targets(self, symbol: str) -> IndicatorState:
+    def _calc_confirmations(self, symbol: str) -> IndicatorState:
         src = self._get_live_source()
         tf = self._get_live_timeframe()
         try:
-            res = tt_get_signal(symbol, tf, src)
-            state = self._to_state(res, "Trend")
+            res = cf_get_signal(symbol, tf, src)
+            state = self._to_state(res, "Confirmations")
             return state
         except Exception as e:
-            self.log.emit(f"[{symbol}] TrendTargets error: {e}")
-            return IndicatorState(status="na", detail="Trend error", raw={"error": str(e)})
+            self.log.emit(f"[{symbol}] Confirmations error: {e}")
+            return IndicatorState(status="na", detail="Confirmations error", raw={"error": str(e)})
 
     def _calc_all_indicators(self, symbol: str, enabled: List[str]) -> Dict[str, IndicatorState]:
         out: Dict[str, IndicatorState] = {}
@@ -261,8 +261,8 @@ class Worker(QThread):
             out["ema_ms"] = self._calc_ema_ms(symbol)
         if "smart_money" in enabled:
             out["smart_money"] = self._calc_smart_money(symbol)
-        if "trend_targets" in enabled:
-            out["trend_targets"] = self._calc_trend_targets(symbol)
+        if "confirmations" in enabled:
+            out["confirmations"] = self._calc_confirmations(symbol)
         return out
 
     # ------- сводный статус -------
@@ -315,7 +315,7 @@ class Worker(QThread):
         ind_names = {
             "ema_ms": "EMA",
             "smart_money": "SM",
-            "trend_targets": "Тренд"
+            "confirmations": "CONF"
         }
         
         ind_emoji = {
